@@ -2,7 +2,7 @@ import io
 import numpy as np
 import torch
 
-from .network import Net
+from network import Net
 from sctlib.analysis import Trace
 
 
@@ -81,8 +81,8 @@ def predict_kc_nn(net: Net, X: np.ndarray) -> float:
 
 
 def main():
-    MODEL_PATH = "src/sctlib/analysis/trace/NeuralNetwork/kc_predictor.pt"
-    DAT_PATH   = r"src/sctlib/analysis/trace/NeuralNetwork/Real_traces/Line1_TiAl_CrossPolCheck_LER4_IQmeas_PDUT-84.0dBm_T240.0mK_Tbb12.0K_0.738GHzto0.742GHz_Rate1.0e+06_Sample1000000_BW1.0Hz_Navg1_RF0dBm_LO0dBm.dat"
+    MODEL_PATH = "kc_predictor.pt"
+    DAT_PATH   = r"Real_traces/Line1_TiAl_CrossPolCheck_LER3_IQmeas_PDUT-84.0dBm_T140.0mK_Tbb5.0K_0.7323GHzto0.7363GHz_Rate1.0e+06_Sample1000000_BW1.0Hz_Navg1_RF0dBm_LO0dBm.dat"
 
     trace = Trace()
     trace.load_trace(source='cab', path=DAT_PATH)

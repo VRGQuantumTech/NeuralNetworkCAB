@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from .lorentzian_generator import lorentzian_generator
-from .network import Net
+from lorentzian_generator import lorentzian_generator
+from network import Net
 import torch
 from trace import Trace
 

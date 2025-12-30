@@ -1,5 +1,5 @@
 import numpy as np
-from .lorentzian import lorentzian as lorentzian_cy  
+from lorentzian import lorentzian as lorentzian_cy  
 #from trace import Trace
 import matplotlib.pyplot as plt
 import numpy as np
