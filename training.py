@@ -4,16 +4,17 @@ from lorentzian_generator import lorentzian_generator
 from network import Net
 import torch
 from trace import Trace
+import random
 
 def main():    
 
     cavity_params = {
-        "ac":     (0.3, 1.8),          
-        "dt":     (0, 1e-9),        
-        "phi":    (-np.pi, np.pi),      
-        "dphi":   (-np.pi/4, np.pi/4),      
-        "kappai": (1e4, 1e6),         
-        "fr": (7.30e11 - 2e9, 7.50e11 + 2e9)
+        "ac":     (0.3, 1.8),
+        "dt":     (-1e-7, 0),
+        "phi":    (0, 1e5),
+        "dphi":   (-np.pi/4, np.pi/4),
+        "kappai": (1e4, 1e6),
+        "fr":     (7.30e8 - 2e6, 7.50e8 + 2e6)
     }
 
     kc_limits = (1e4, 1e5)
@@ -22,7 +23,7 @@ def main():
         n_samples=30000,
         cavity_params=cavity_params,
         kc_limits=kc_limits,
-        frequency_points=5000,     
+        frequency_points=[2000, 5000, 10000, 15000, 20000],     
         noise_std_signal=(0.001, 0.05),
     )
     

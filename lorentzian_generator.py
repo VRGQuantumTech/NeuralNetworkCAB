@@ -1,53 +1,49 @@
 import numpy as np
-from lorentzian import lorentzian as lorentzian_cy  
-#from trace import Trace
+from lorentzian import lorentzian as lorentzian_cy
 import matplotlib.pyplot as plt
-import numpy as np
 from sctlib.analysis import Trace
+
 
 def _random_poly_response(x: np.ndarray,
                           deg_min: int = 1,
                           deg_max: int = 5,
                           coeff_scale: float = 0.25,
                           ensure_positive: bool = False) -> np.ndarray:
-    """
-    Devuelve a(f) como polinomio real aleatorio evaluado en x (x normalizado ~ [-1,1]).
-    - Randomiza grado
-    - Randomiza coeficientes
-    """
+    
     deg = int(np.random.randint(deg_min, deg_max + 1))
     coef = np.random.normal(0.0, coeff_scale, size=deg + 1)
-    coef[0] = 1.0   # baseline alrededor de 1
+    coef[0] = 1.0
 
     a = np.zeros_like(x, dtype=np.float64)
     xp = np.ones_like(x, dtype=np.float64)
     for k in range(deg + 1):
         a += coef[k] * xp
-        xp *= x     # x^k --> x^(k+1)
+        xp *= x
 
-    # Asegura amp > 0
     if ensure_positive:
         a = a - np.min(a)
-        a = 0.2 + a  
-    
-    a = a / (np.mean(np.abs(a)) + 1e-12)
+        a = 0.2 + a
 
+    a = a / (np.mean(np.abs(a)) + 1e-12)
     return a
 
 
-def _apply_system_response(f: np.ndarray,
-                           s: np.ndarray,
-                           poly_deg_range: tuple[int, int] = (1, 5),
-                           poly_coeff_scale: float = 0.25,
-                           dt_sys_range: tuple[float, float] = (-2e-9, 2e-9),
-                           phi0_sys_range: tuple[float, float] = (-np.pi, np.pi)) -> np.ndarray:
-    """
-    Multiplica s(f) por H(f)=a(f)*exp(i*(dt_sys*f + phi0_sys)).
-    """
+def _apply_random_poly_to_magnitude_only(
+    f: np.ndarray,
+    s: np.ndarray,
+    poly_deg_range: tuple[int, int] = (1, 5),
+    poly_coeff_scale: float = 0.25,
+) -> np.ndarray:
+    
     f = f.astype(np.float64)
+
+    mag = np.abs(s)
+    phase = np.unwrap(np.angle(s))  
+
+    # eje normalizado [-1,1] para el polinomio
     f0 = float(np.mean(f))
-    span = float(np.ptp(f)) + 1e-12     # max(f) - min(f) + 1e-12
-    x = (f - f0) / (span / 2.0)     # normaliza en [-1, 1]
+    span = float(np.ptp(f)) + 1e-12
+    x = (f - f0) / (span / 2.0)
 
     a = _random_poly_response(
         x,
@@ -57,121 +53,58 @@ def _apply_system_response(f: np.ndarray,
         ensure_positive=False,
     )
 
-    dt_sys = float(np.random.uniform(*dt_sys_range))
-    phi0_sys = float(np.random.uniform(*phi0_sys_range))
+    mag2 = mag * a
 
-    phase = dt_sys * f + phi0_sys
-    H = a * np.exp(1j * phase)
-    return s * H
+    return mag2 * np.exp(1j * phase)
+
 
 def lorentzian_generator(
     n_samples: int,
     cavity_params: dict,
     kc_limits: tuple[float, float],
-    frequency_points: int = 2000,
+    frequency_points: tuple[int] = [2000, 5000, 10000, 15000, 20000],
     noise_std_signal: float | tuple[float, float] = 0.0,
 ):
-    """
-    Genera un dataset sintético usando la lorentziana de Cython y la clase Trace.
-
-    Parámetros
-    ----------
-    n_samples : int
-        Número de trazas sintéticas a generar.
-    cavity_params : dict
-        Parámetros fijos de la cavidad (excepto kc). Ejemplo:
-        {
-            "ac": 1.0,
-            "dt": 0.0,
-            "phi": 0.0,
-            "dphi": 0.0,
-            "kappai": 1.0e6,   # kappa interna
-            "fr": 7.5e9,       # frecuencia de resonancia
-        }
-    kc_limits : (kc_min, kc_max)
-        Rango uniforme de kappa_c (acoplo) a muestrear.
-    frequency_limits : (f_min, f_max)
-        Rango de frecuencias del barrido (Hz).
-    frequency_points : int
-        Número de puntos de frecuencia por traza.
-    noise_std_signal : float
-        σ del ruido gaussiano añadido a la señal (real e imag) para las
-        mediciones sintéticas.
-
-    Devuelve
-    --------
-    f : ndarray, shape (F,)
-        Vector de frecuencias.
-    X_meas : ndarray, shape (N, 2F)
-        Dataset de mediciones sintéticas (con ruido):
-        [Re(S21_meas) || Im(S21_meas)].
-    X_clean : ndarray, shape (N, 2F)
-        Dataset de lorentzianas teóricas (sin ruido) para cada muestra:
-        [Re(S21_clean) || Im(S21_clean)].
-    kc_true : ndarray, shape (N,)
-        Valores verdaderos de kappa_c usados para cada traza.
-    traces : list[Trace]
-        Lista de objetos Trace correspondientes a las mediciones sintéticas.
-    """
-
-
     kappai_true = np.zeros(n_samples)
     log_lo, log_hi = np.log(kc_limits[0]), np.log(kc_limits[1])
     kc_true = np.exp(np.random.uniform(log_lo, log_hi, size=n_samples))
 
+    frequency_points = int(np.random.choice(frequency_points))
     X_meas  = np.empty((n_samples, 2 * frequency_points), dtype=np.float32)
     X_clean = np.empty((n_samples, 2 * frequency_points), dtype=np.float32)
 
-    #traces: list[Trace] = []
-
     for i, kc in enumerate(kc_true):
-
-        # Cavity params
-        ac = float(np.exp(np.random.uniform(
-            np.log(cavity_params["ac"][0]),
-            np.log(cavity_params["ac"][1])
-        )))
-
+        ac = float(np.exp(np.random.uniform(np.log(cavity_params["ac"][0]),
+                                            np.log(cavity_params["ac"][1]))))
         dt = float(np.random.uniform(*cavity_params["dt"]))
-
         fr = float(np.random.uniform(*cavity_params["fr"]))
-
         dphi = float(np.random.uniform(*cavity_params["dphi"]))
 
-        kappai = float(np.exp(np.random.uniform(
-            np.log(cavity_params["kappai"][0]),
-            np.log(kc_limits[1] * 5)
-        )))
+        kappai = float(np.exp(np.random.uniform(np.log(cavity_params["kappai"][0]),
+                                                np.log(kc_limits[1] * 5))))
         kappai_true[i] = kappai
 
-        phi  = float(np.random.uniform(*cavity_params["phi"]))
+        phi = float(np.random.uniform(*cavity_params["phi"]))
 
         kc = float(kc)
-        kappa = kappai + kc   
-        r = kc / kappa        # ratio de acoplo
+        kappa = kappai + kc
+        r = kc / kappa
 
-        delta_f_max = 10 * kc_limits[1] + kappai
-        f = np.linspace(
-            fr - delta_f_max,
-            fr + delta_f_max,
-            frequency_points,
-            dtype=np.float64,
-        )
+        delta_f_max = 100 * kc_limits[1] + kappai
+        f = np.linspace(fr - delta_f_max, fr + delta_f_max, frequency_points, dtype=np.float64)
 
-        # Lorentzian 
-        s_clean = lorentzian_cy(f, ac, dt, phi, r, kappa, dphi, fr)
+        s0 = lorentzian_cy(f, ac, dt, phi, r, kappa, dphi, fr)
 
-        s_clean = _apply_system_response(
-            f, s_clean,
+        s_clean = _apply_random_poly_to_magnitude_only(
+            f, s0,
             poly_deg_range=(1, 5),
-            poly_coeff_scale=np.random.uniform(0.02, 0.06),      
-            dt_sys_range=(-4e-9, 4e-9), 
-            phi0_sys_range=(-np.pi, np.pi),
+            poly_coeff_scale=np.random.uniform(0.02, 0.06),
         )
 
         c0 = (np.random.normal(0.0, 0.05) + 1j*np.random.normal(0.0, 0.05))
         s_clean = s_clean + c0
-        eps = np.random.uniform(-0.03, 0.03)  # 3% de imbalance
+
+        eps = np.random.uniform(-0.03, 0.03)
         I = s_clean.real * (1 + eps)
         Q = s_clean.imag * (1 - eps)
         s_clean = I + 1j*Q
@@ -188,34 +121,22 @@ def lorentzian_generator(
             noise_imag = np.random.normal(0.0, sig, size=frequency_points)
             s_meas += noise_real + 1j * noise_imag
 
-        # Combinamos partes real e imaginaria
         X_clean[i, :frequency_points] = s_clean.real.astype(np.float32)
         X_clean[i, frequency_points:] = s_clean.imag.astype(np.float32)
-
-        X_meas[i, :frequency_points] = s_meas.real.astype(np.float32)
-        X_meas[i, frequency_points:] = s_meas.imag.astype(np.float32)
-
-        # Trace con la medición sintética
-        """ tr = Trace(
-            frequency=f.copy(),
-            trace=s_meas.astype(np.complex128),
-            trace_type="frequency sweep",
-            mod="iq",
-            model="parallel",
-        )
-        traces.append(tr) """
+        X_meas[i, :frequency_points]  = s_meas.real.astype(np.float32)
+        X_meas[i, frequency_points:]  = s_meas.imag.astype(np.float32)
 
     return f, X_meas, X_clean, kc_true.astype(np.float32), kappai_true
 
 
 if __name__ == "__main__":
     cavity_params = {
-        "ac":     (0.3, 1.8),          
-        "dt":     (0, 1e-9),        
-        "phi":    (-np.pi, np.pi),      
-        "dphi":   (-np.pi/4, np.pi/4),      
-        "kappai": (1e4, 1e6),         
-        "fr":     (7.30e11 - 2e9, 7.50e11 + 2e9)
+        "ac":     (0.3, 1.8),
+        "dt":     (-1e-7, 0),
+        "phi":    (0, 1e5),
+        "dphi":   (-np.pi/4, np.pi/4),
+        "kappai": (1e4, 1e6),
+        "fr":     (7.30e8 - 2e6, 7.50e8 + 2e6)
     }
 
     kc_limits = (1e4, 1e5)
@@ -224,52 +145,65 @@ if __name__ == "__main__":
         n_samples=3,
         cavity_params=cavity_params,
         kc_limits=kc_limits,
-        frequency_points=5000,     
+        frequency_points=[2000, 5000, 10000, 15000, 20000],
         noise_std_signal=0.0,
     )
 
     i = 2
     F = f.shape[0]
-
     re = X_meas[i, :F]
     im = X_meas[i, F:]
-    mag = np.sqrt((re**2 + im**2))
+    mag = np.sqrt(re**2 + im**2)
+    phase = np.unwrap(np.arctan2(im, re))
 
     f_GHz = f * 1e-9
 
-    plt.figure()
-    plt.plot(f_GHz, re, label="Re(S21)")
-    plt.plot(f_GHz, im, label="Im(S21)")
-    plt.plot(f_GHz, mag, label="|S21|", linestyle="--")
-    plt.xlabel("Frequency [Hz]")
-    plt.ylabel("Amplitude")
-    plt.title(f"Lorentzian clean (kc = {kc_true[i]:.2e})")
-    plt.legend()
+    fig, ax = plt.subplots(1, 2, dpi=300, figsize=(12, 4), constrained_layout=True, sharex=True)
+    ax[0].plot(f_GHz, mag, linestyle="--")
+    ax[1].plot(f_GHz, phase)
+    ax[0].set_xlabel("Frequency [GHz]")
+    ax[0].set_ylabel("Amplitude")
+    ax[1].set_ylabel("Phase [rad]")
+    ax[0].set_title(f"Magnitude (kc = {kc_true[i]:.2e})")
+    ax[1].set_title(f"Phase (kc = {kc_true[i]:.2e})")
+    ax[0].tick_params(direction='in', which='both')
+    ax[1].tick_params(direction='in', which='both')
+    plt.show()
 
-    ax = plt.gca()
-    ax.tick_params(direction='in', which='both')
-
-    plt.show()  
-
-    F = f.shape[0]
-
-    I = X_meas[i, :F]      # Parte real → I
-    Q = X_meas[i, F:]      # Parte imaginaria → Q
+    I = X_meas[i, :F]
+    Q = X_meas[i, F:]
 
     plt.figure()
     plt.plot(I, Q, label="IQ trajectory")
-    plt.scatter(I[0], Q[0], color='green', label="Start", zorder=3)
-    plt.scatter(I[-1], Q[-1], color='red', label="End", zorder=3)
-
+    plt.scatter(I[0], Q[0], label="Start", zorder=3)
+    plt.scatter(I[-1], Q[-1], label="End", zorder=3)
     plt.xlabel("I (Re{S21})")
     plt.ylabel("Q (Im{S21})")
     plt.title(f"IQ plot (kc = {kc_true[i]:.2e})")
     plt.legend()
-    plt.axis("equal")   
-
+    plt.axis("equal")
     ax = plt.gca()
     ax.tick_params(direction='in', which='both')
+    plt.show()
 
-    plt.show() 
 
-    
+    I = X_meas[i, :F]
+    Q = X_meas[i, F:]
+
+    mag = np.sqrt(I**2 + Q**2)        
+    f_GHz = f * 1e-9
+
+    fig, ax = plt.subplots(1, 1, dpi=300, figsize=(9.7, 4.0), constrained_layout=True)
+
+    ax.plot(f_GHz, I, label="Re(S21)")
+    ax.plot(f_GHz, Q, label="Im(S21)")
+    ax.plot(f_GHz, mag, label="|S21|", linestyle="--")
+
+    ax.set_xlabel("Frequency [GHz]")
+    ax.set_ylabel("Amplitude")
+    ax.set_title(f"Lorentzian clean (kc = {kc_true[i]:.2e})")
+    ax.legend(frameon=False)
+
+    ax.tick_params(direction="in", which="both", top=True, right=True)
+    plt.show()
+

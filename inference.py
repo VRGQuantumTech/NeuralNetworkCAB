@@ -1,7 +1,13 @@
+import matplotlib
+matplotlib.use("Agg")   # ← NO ventanas
+
+import matplotlib.pyplot as plt
+plt.show = lambda *args, **kwargs: None  
+
 import io
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
+from pathlib import Path
 
 from lorentzian import lorentzian as lorentzian_cy
 from network import Net
@@ -84,26 +90,53 @@ def predict_kc_nn(net: Net, X: np.ndarray) -> float:
 
 def main():
     MODEL_PATH = "kc_predictor.pt"
-    DAT_PATH   = r"Real_traces/Line1_TiAl_CrossPolCheck_LER3_IQmeas_PDUT-84.0dBm_T140.0mK_Tbb5.0K_0.7323GHzto0.7363GHz_Rate1.0e+06_Sample1000000_BW1.0Hz_Navg1_RF0dBm_LO0dBm.dat"
 
-    """ trace = Trace()
-    trace.load_trace(source='cab', path=DAT_PATH)
-    results = trace.do_fit(baseline=(3, 0.7), mode="one-shot", verbose=False)
-    kc_oneshot = float(results["one-shot"].final["kappac"])
+    DATASET_DIR = Path("Experimental_Validation_Dataset")
+
+    dat_files = sorted(DATASET_DIR.glob("*.dat"))
+
+    if len(dat_files) == 0:
+        print("No se encontraron ficheros .dat en Experimental_Validation_Dataset")
+        return
 
     net, ckpt = load_trained_model(MODEL_PATH)
-    base = results["one-shot"].base
-    #trace.remove_complex_baseline()
-    X_real = build_nn_input_from_dat_iq(DAT_PATH, input_dim=int(ckpt["input_dim"]))
+    input_dim = int(ckpt["input_dim"])
 
+    rel_errors = []
 
-    kc_nn = predict_kc_nn(net, X_real)
+    for dat_path in dat_files[:20]:
+        try:
+            # --- One-shot ---
+            trace = Trace()
+            trace.load_trace(source="cab", path=str(dat_path))
+            results = trace.do_fit(baseline=(3, 0.7), mode="one-shot", verbose=False)
+            plt.close("all")
+            fit = results["one-shot"].final
+            kc_oneshot = float(fit["kappac"])
 
-    print(f"-> Kc pred (NN, .dat real)   = {kc_nn:.6e}")
-    print(f"-> Kc one-shot (fit)         = {kc_oneshot:.6e}")
-    print(f"-> Relative error (NN vs fit)= {abs(kc_nn-kc_oneshot)/kc_oneshot:.3%}") """
+            # --- NN ---
+            X_real = build_nn_input_from_dat_iq(str(dat_path), input_dim=input_dim)
+            kc_nn = predict_kc_nn(net, X_real)
 
-    # Experimental (.dat)
+            # --- error relativo ---
+            if kc_oneshot > 0:
+                rel_err = abs(kc_nn - kc_oneshot) / kc_oneshot
+                rel_errors.append(rel_err)
+
+        except Exception:
+            continue
+
+    if len(rel_errors) == 0:
+        print("No se pudo calcular el error (todos los ficheros fallaron).")
+        return
+
+    rel_errors = np.asarray(rel_errors, dtype=np.float64)
+
+    print(f"Archivos evaluados: {rel_errors.size}")
+    print(f"Error relativo medio (NN vs one-shot): {rel_errors.mean():.3%}")
+    print(f"Desviación típica: {rel_errors.std(ddof=1) if rel_errors.size > 1 else 0.0:.3%}")
+
+    """ # Experimental (.dat)
     f_exp, I_exp, Q_exp = load_iq_from_dat(DAT_PATH)
     s_exp = I_exp + 1j * Q_exp
     amp_exp = np.abs(s_exp)
@@ -215,12 +248,8 @@ def main():
         right=True
     )
 
-    plt.show()
+    plt.show() """
 
-    print(f"-> Kc pred (NN, .dat real)   = {kc_nn:.6e}")
-    print(f"-> Kc one-shot (fit)         = {kc_oneshot:.6e}")
-    print(f"-> Relative error (NN vs fit)= {abs(kc_nn-kc_oneshot)/kc_oneshot:.3%}")
-    
 
 if __name__ == "__main__":
     main()
