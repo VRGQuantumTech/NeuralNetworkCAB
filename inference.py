@@ -1,5 +1,5 @@
 import matplotlib
-matplotlib.use("Agg")   # ← NO ventanas
+matplotlib.use("Agg")   # ← NO ventanas (quitar si inference individual)
 
 import matplotlib.pyplot as plt
 plt.show = lambda *args, **kwargs: None  
@@ -104,7 +104,7 @@ def main():
 
     rel_errors = []
 
-    for dat_path in dat_files[:20]:
+    for dat_path in dat_files[80:100]:
         try:
             # --- One-shot ---
             trace = Trace()
@@ -134,16 +134,18 @@ def main():
 
     print(f"Archivos evaluados: {rel_errors.size}")
     print(f"Error relativo medio (NN vs one-shot): {rel_errors.mean():.3%}")
-    print(f"Desviación típica: {rel_errors.std(ddof=1) if rel_errors.size > 1 else 0.0:.3%}")
+    print(f"Desviación típica: {rel_errors.std(ddof=1) if rel_errors.size > 1 else 0.0:.3%}") 
 
-    """ # Experimental (.dat)
+    """ DAT_PATH = dat_files[38]
+
+    # Experimental (.dat)
     f_exp, I_exp, Q_exp = load_iq_from_dat(DAT_PATH)
     s_exp = I_exp + 1j * Q_exp
     amp_exp = np.abs(s_exp)
 
     # One-shot  
     trace = Trace()
-    trace.load_trace(source="cab", path=DAT_PATH)
+    trace.load_trace(source="cab", path=str(DAT_PATH))
     results = trace.do_fit(baseline=(3, 0.7), mode="one-shot", verbose=False)
 
     fit = results["one-shot"].final
@@ -160,7 +162,7 @@ def main():
 
     # Neural Network (kc) 
     net, ckpt = load_trained_model(MODEL_PATH)
-    X_real = build_nn_input_from_dat_iq(DAT_PATH, input_dim=int(ckpt["input_dim"]))
+    X_real = build_nn_input_from_dat_iq(str(DAT_PATH), input_dim=int(ckpt["input_dim"]))
     kc_nn = predict_kc_nn(net, X_real)
 
     # Para reconstruir la curva NN: mantengo kappa_i del one-shot y cambio kappa_c
@@ -248,8 +250,12 @@ def main():
         right=True
     )
 
-    plt.show() """
+    plt.show() 
 
+    print(f"Kc one-shot: {kc_oneshot:.3}")
+    print(f"Kc (NN): {kc_nn:.3}")
+    print(f"Error: {abs(kc_nn - kc_oneshot) / kc_oneshot if kc_oneshot > 0 else 0.0:.3%}")
+ """
 
 if __name__ == "__main__":
     main()

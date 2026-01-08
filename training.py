@@ -9,17 +9,17 @@ import random
 def main():    
 
     cavity_params = {
-        "ac":     (0.3, 1.8),
-        "dt":     (-1e-7, 0),
-        "phi":    (0, 1e5),
-        "dphi":   (-np.pi/4, np.pi/4),
-        "kappai": (1e4, 1e6),
-        "fr":     (7.30e8 - 2e6, 7.50e8 + 2e6)
+        "ac"     : (0.3, 1.8),
+        "dt"     : (-1e-7, 0),
+        "phi"    : (-np.pi, np.pi),
+        "dphi"   : (-np.pi/4, np.pi/4),
+        "kappai" : (1e2, 1e5), 
+        "fr"     : (7.30e8 - 2e6, 7.50e8 + 2e6)
     }
 
     kc_limits = (1e4, 1e5)
 
-    f, X_meas, X_clean, kc_true, kappai_true = lorentzian_generator(
+    F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
         n_samples=30000,
         cavity_params=cavity_params,
         kc_limits=kc_limits,
