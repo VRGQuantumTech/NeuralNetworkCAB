@@ -105,7 +105,6 @@ def padder_optimum(
         s_base = s[-1] / denom
         s_corr[Fi:] = s_base * padder_ext[Fi:]
 
-    # ---- 7) Salida I/Q y máscara ----
     I_pad = s_corr.real.astype(np.float64)
     Q_pad = s_corr.imag.astype(np.float64)
 
