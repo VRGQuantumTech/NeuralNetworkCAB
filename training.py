@@ -1,5 +1,8 @@
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+plt.show = lambda *args, **kwargs: None  
 from lorentzian_generator import lorentzian_generator
 from network import Net
 import torch
@@ -20,12 +23,13 @@ def main():
     kc_limits = (1e4, 1e5)
 
     F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
-        n_samples=30000,
+        n_samples=5000,
         cavity_params=cavity_params,
         kc_limits=kc_limits,
-        frequency_points=[2000, 5000, 10000, 15000, 20000],     
+        frequency_points=[2000, 5000, 6000, 10000, 15000, 20000],     
         noise_std_signal=(0.001, 0.05),
     )
+
     
 
     y = np.log(kc_true).reshape(-1, 1).astype(np.float32)

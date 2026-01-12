@@ -1,3 +1,4 @@
+import traceback
 import matplotlib
 matplotlib.use("Agg")   # ← NO ventanas (quitar si inference individual)
 
@@ -104,12 +105,13 @@ def main():
 
     rel_errors = []
 
-    for dat_path in dat_files[80:100]:
+    for dat_path in dat_files[:40]:
         try:
             # --- One-shot ---
             trace = Trace()
             trace.load_trace(source="cab", path=str(dat_path))
-            results = trace.do_fit(baseline=(3, 0.7), mode="one-shot", verbose=False)
+            trace.baseline_polyfit(order=3, plot=True)
+            results = trace.do_fit(mode="one-shot", verbose=False)
             plt.close("all")
             fit = results["one-shot"].final
             kc_oneshot = float(fit["kappac"])
@@ -124,6 +126,8 @@ def main():
                 rel_errors.append(rel_err)
 
         except Exception:
+            print("FALLÓ", dat_path.name)
+            traceback.print_exc()
             continue
 
     if len(rel_errors) == 0:

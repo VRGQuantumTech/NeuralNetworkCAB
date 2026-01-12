@@ -61,7 +61,8 @@ def padder_optimum(
         standalone=False,
     )
 
-    poly = np.asarray(amplitude_base, dtype=np.float64)
+    baseline_arr = amplitude_base
+    poly = np.asarray(np.abs(baseline_arr), dtype=np.float64)
 
     padder_real = poly * phase_delay  
 
@@ -87,9 +88,21 @@ def padder_optimum(
     # Extiendo p(f)
     poly_ext = np.empty_like(f_pad, dtype=np.float64)
     poly_ext[:Fi] = poly
-    poly_ext[Fi:] = poly[-1]   # baseline constante
 
-    padder_ext = poly_ext * phase_delay_ext
+    # normalización como en tu generador (aprox): x en [-1, 1] para el tramo real
+    f0_mean = float(np.mean(f))
+    span = float(np.ptp(f)) + 1e-12
+    x = (f - f0_mean) / (span / 2.0)          # (Fi,)
+    x_pad = (f_pad - f0_mean) / (span / 2.0)  # (max_F,)
+
+    # Ajusto un polinomio en x usando SOLO el tramo real 
+    coeffs_x = np.polyfit(x, poly, deg=min(order, Fi - 1))
+    poly_ext = np.polyval(coeffs_x, x_pad).astype(np.float64)
+
+    #baseline siempre positivo
+    poly_ext = np.maximum(poly_ext, 1e-12)
+
+    padder_ext = poly_ext * phase_delay_ext  # (max_F,) complejo
 
     s_corr = np.empty(max_F, dtype=np.complex128)
     s_corr[:Fi] = s
@@ -97,13 +110,14 @@ def padder_optimum(
     # base constante en el "espacio sin padder" (para que continúe suave)
     eps = 1e-12
     denom = padder_real[-1]
+
     if np.abs(denom) < eps:
-        # fallback: si el padder es ~0, uso el propio valor final como base
         s_base = s[-1]
-        s_corr[Fi:] = s_base
     else:
         s_base = s[-1] / denom
-        s_corr[Fi:] = s_base * padder_ext[Fi:]
+
+    # Relleno el padding usando el padder extendido
+    s_corr[Fi:] = s_base * padder_ext[Fi:]
 
     I_pad = s_corr.real.astype(np.float64)
     Q_pad = s_corr.imag.astype(np.float64)
@@ -349,6 +363,7 @@ def lorentzian_generator(
 
         trace_clean = Trace(frequency=f_i, trace=s_clean)
         trace_meas  = Trace(frequency=f_i, trace=s_meas)
+
 
         f_pad, I_clean_pad, Q_clean_pad, _ = padder_optimum(
             trace_clean,
