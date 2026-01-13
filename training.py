@@ -23,11 +23,11 @@ def main():
     kc_limits = (1e4, 1e5)
 
     F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
-        n_samples=5000,
+        n_samples=10000,
         cavity_params=cavity_params,
         kc_limits=kc_limits,
         frequency_points=[2000, 5000, 6000, 10000, 15000, 20000],     
-        noise_std_signal=(0.001, 0.05),
+        noise_std_signal=(0.001, 0.03),
     )
 
     
@@ -69,11 +69,8 @@ def main():
     ratio_true_train = kc_true_train / kappai_train
     ratio_true_test  = kc_true_test  / kappai_test
 
-    mae_test = np.mean(np.abs(kc_pred_test - kc_true_test))
-    rel_err_test = np.mean(np.abs(kc_pred_test - kc_true_test) / kc_true_test)
-
-    print(f"MAE Kc (test): {mae_test:.3e}")
-    print(f"Relative error (test): {rel_err_test:.3%}")
+    log_err = np.abs(y_pred_test - y_test)
+    print("Mean |Δlog(Kc)|:", log_err.mean())
 
     model_path = "kc_predictor.pt"
     torch.save({

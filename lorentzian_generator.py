@@ -2,122 +2,118 @@ import numpy as np
 from lorentzian import lorentzian as lorentzian_cy
 import matplotlib.pyplot as plt
 from sctlib.analysis import Trace
-from sctlib.analysis.trace.support._one_shot_fit import _guess_phase_delay, polyfit_baseline, guess_kappa, guess_amplitude
+from sctlib.analysis.trace.support._one_shot_fit import _guess_phase_delay, guess_kappa, guess_amplitude
 
 def padder_optimum(
     trace,
     *,
     max_F: int,
-    kappa_guessed: float,
-    order: int,
-    interval: tuple[float, float] | None = None,
-    # extensión de frecuencia
     keep_df: bool = True,
     df_override: float | None = None,
     return_debug: bool = False,
+    noise: float = 0.0,
+    order: int = 2,
 ):
     """
-    Padding "optimum":
-      1) Calcula p(f) con polyfit_baseline y phase_delay con _guess_phase_delay
-      2) Extiende f hasta max_F
-      3) Rellena s desde Fi..max_F usando la prolongación del padder:
-            padder_ext(f) = p_ext(f) * exp(j*(delay*f + phi0))
-         y una base constante s_base.
+    Padding usando el poly del fit de baseline_polyfit (si existe).
+    Si poly=None, hace fallback extrapolando baseline con derivadas (1ª + 2ª)
+    estimadas en el extremo derecho (últimos 3 puntos).
 
-    Returns
-    -------
-    f_pad : (max_F,)
-    I_pad : (max_F,)
-    Q_pad : (max_F,)
-    mask  : (max_F,)  (1.0 real, 0.0 padding)
+    baseline_ext = poly(f_pad)  (si poly existe)
+    baseline_ext = extrapolación local (si poly None)
+
+    s_pad = s_base * baseline_ext * exp(1j*(delay*f + phi0))
     """
 
     f = np.asarray(trace.frequency, dtype=np.float64)
     s = np.asarray(trace.trace, dtype=np.complex128)
     Fi = f.size
 
-    if Fi < 3:
-        raise ValueError("Trace demasiado corta para padder_optimum (Fi < 3).")
+    if Fi < 4:
+        raise ValueError("Trace demasiado corta para padder_optimum (necesito Fi >= 4).")
     if Fi > max_F:
         raise ValueError(f"Fi ({Fi}) > max_F ({max_F}).")
-    if kappa_guessed is None:
-        raise ValueError("Debes pasar kappa_guessed para polyfit_baseline.")
 
-    # Phase delay
-    delay_guessed, delayAtZero_guessed = _guess_phase_delay(trace)
-    phase_delay = np.exp(1j * (delay_guessed * f + delayAtZero_guessed))
+    # 1) eje de frecuencia extendido
+    if keep_df:
+        df = float(f[-1] - f[-2])
+    else:
+        if df_override is None:
+            raise ValueError("df_override debe darse si keep_df=False")
+        df = float(df_override)
 
-    if interval is None:
-        raise ValueError("Debes pasar interval=(f_min, f_max) en Hz (fuera del dip).")
-
-    amplitude_base, p = polyfit_baseline(
-        trace,
-        kappa_guessed,
-        order=int(order),
-        interval=float(interval),   
-        save=False,
-        verbose=False,
-        plot=False,
-        standalone=False,
-    )
-
-    baseline_arr = amplitude_base
-    poly = np.asarray(np.abs(baseline_arr), dtype=np.float64)
-
-    padder_real = poly * phase_delay  
-
-    # Padding
+    pad_len = max_F - Fi
     f_pad = np.empty(max_F, dtype=np.float64)
     f_pad[:Fi] = f
+    if pad_len > 0:
+        f_pad[Fi:] = f[-1] + df * np.arange(1, pad_len + 1, dtype=np.float64)
 
-    if max_F > Fi:
-        if df_override is not None:
-            df = float(df_override)
-        else:
-            if not keep_df:
-                # si no quieres df, por defecto uso el último df
-                df = float(f[-1] - f[-2])
-            else:
-                # df medio 
-                df = float(np.mean(np.diff(f)))
-        f_pad[Fi:] = f[-1] + df * np.arange(1, (max_F - Fi) + 1, dtype=np.float64)
+    # 2) fase (delay + phi0)
+    delay_guessed, phi0_guessed = _guess_phase_delay(trace)
 
-    # Phase delay sobre f_pad
-    phase_delay_ext = np.exp(1j * (delay_guessed * f_pad + delayAtZero_guessed))  # (max_F,)
+    # 3) baseline y poly del fit
+    baseline, poly = trace.baseline_polyfit(scale=20.0, order=order, plot=False)
+    baseline = np.asarray(baseline, dtype=np.float64)
 
-    # Extiendo p(f)
-    poly_ext = np.empty_like(f_pad, dtype=np.float64)
-    poly_ext[:Fi] = poly
+    # 4) baseline extendido
+    if poly is not None:
+        # Caso bueno: usar el poly (evaluado en Hz)
+        baseline_ext = np.asarray(poly(f_pad), dtype=np.float64)
+        used_fallback = False
+    else:
+        # Fallback
+        used_fallback = True
 
-    # normalización como en tu generador (aprox): x en [-1, 1] para el tramo real
-    f0_mean = float(np.mean(f))
-    span = float(np.ptp(f)) + 1e-12
-    x = (f - f0_mean) / (span / 2.0)          # (Fi,)
-    x_pad = (f_pad - f0_mean) / (span / 2.0)  # (max_F,)
+        x0 = f[-1]
+        x = np.array([f[-3] - x0, f[-2] - x0, f[-1] - x0], dtype=np.float64)  
+        y = np.array([baseline[-3], baseline[-2], baseline[-1]], dtype=np.float64)
 
-    # Ajusto un polinomio en x usando SOLO el tramo real 
-    coeffs_x = np.polyfit(x, poly, deg=min(order, Fi - 1))
-    poly_ext = np.polyval(coeffs_x, x_pad).astype(np.float64)
+        
+        A = np.vstack([x**2, x, np.ones_like(x)]).T
+        try:
+            a2, a1, a0 = np.linalg.solve(A, y)
+        except np.linalg.LinAlgError:
+            dx = float(f[-1] - f[-2])
+            m0 = (baseline[-1] - baseline[-2]) / (dx + 1e-30)
+            a2 = 0.0
+            a1 = m0
+            a0 = baseline[-1]
 
-    #baseline siempre positivo
-    poly_ext = np.maximum(poly_ext, 1e-12)
+        baseline_ext = np.empty(max_F, dtype=np.float64)
+        baseline_ext[:Fi] = baseline
 
-    padder_ext = poly_ext * phase_delay_ext  # (max_F,) complejo
+        if pad_len > 0:
+            x_pad = (f_pad[Fi:] - x0)  # >= 0
+            baseline_ext[Fi:] = a2 * (x_pad**2) + a1 * x_pad + a0
 
+        # Evitar valores negativos/raros (seguro mínimo)
+        # (si no lo quieres, quita estas 2 líneas)
+        bmin = max(1e-12, 0.05 * float(np.median(np.abs(baseline[-10:])) + 1e-30))
+        baseline_ext = np.maximum(baseline_ext, bmin)
+
+    # 5) fase extendida
+    phase_delay_ext = np.exp(1j * (delay_guessed * f_pad + phi0_guessed))
+
+    # 6) continuidad en el último punto real
+    denom = baseline[-1] * np.exp(1j * (delay_guessed * f[-1] + phi0_guessed))
+    s_base = s[-1] if np.abs(denom) < 1e-12 else (s[-1] / denom)
+
+    # 7) salida
     s_corr = np.empty(max_F, dtype=np.complex128)
     s_corr[:Fi] = s
 
-    # base constante en el "espacio sin padder" (para que continúe suave)
-    eps = 1e-12
-    denom = padder_real[-1]
+    if pad_len > 0:
+        s_corr[Fi:] = s_base * baseline_ext[Fi:] * phase_delay_ext[Fi:]
 
-    if np.abs(denom) < eps:
-        s_base = s[-1]
-    else:
-        s_base = s[-1] / denom
+        # micro-corrección de continuidad en el primer punto padded
+        if np.abs(s_corr[Fi]) > 1e-15:
+            s_corr[Fi:] *= s_corr[Fi - 1] / s_corr[Fi]
 
-    # Relleno el padding usando el padder extendido
-    s_corr[Fi:] = s_base * padder_ext[Fi:]
+        if noise > 0.0:
+            s_corr[Fi:] += (
+                np.random.normal(0.0, noise, size=pad_len)
+                + 1j * np.random.normal(0.0, noise, size=pad_len)
+            )
 
     I_pad = s_corr.real.astype(np.float64)
     Q_pad = s_corr.imag.astype(np.float64)
@@ -128,17 +124,17 @@ def padder_optimum(
     if return_debug:
         debug = dict(
             Fi=Fi,
+            df=float(df),
             delay_guessed=float(delay_guessed),
-            delayAtZero_guessed=float(delayAtZero_guessed),
-            kappa_guessed=float(kappa_guessed),
-            poly_real=poly,
-            poly_ext=poly_ext,
-            padder_real=padder_real,
-            padder_ext=padder_ext,
+            phi0_guessed=float(phi0_guessed),
+            s_base=s_base,
+            poly_order=int(getattr(poly, "order", -1)) if poly is not None else -1,
+            used_fallback=bool(used_fallback),
         )
         return f_pad, I_pad, Q_pad, mask, debug
 
     return f_pad, I_pad, Q_pad, mask
+
 
 
 
@@ -365,39 +361,39 @@ def lorentzian_generator(
         trace_meas  = Trace(frequency=f_i, trace=s_meas)
 
 
-        f_pad, I_clean_pad, Q_clean_pad, _ = padder_optimum(
-            trace_clean,
-            max_F=max_F,
-            kappa_guessed=kappa,
-            order=2,
-            interval=20.0,
-        )
+        try: 
+            f_pad, I_clean_pad, Q_clean_pad, _ = padder_optimum(
+                trace_clean,
+                max_F=max_F,
+                order=poly_deg_range,
+            )
 
-        f_pad, I_meas_pad, Q_meas_pad, _ = padder_optimum(
-            trace_meas,
-            max_F=max_F,
-            kappa_guessed=kappa,
-            order=2,
-            interval=20.0,
-        )
+            f_pad, I_meas_pad, Q_meas_pad, _ = padder_optimum(
+                trace_meas,
+                max_F=max_F,
+                noise=sig,
+                order=poly_deg_range,
+            )
 
-        """ f_pad, I_clean_pad, Q_clean_pad, _mask_clean = padder_1db_tail(
-            f_i,
-            s_clean.real.astype(np.float64),
-            s_clean.imag.astype(np.float64),
-            max_F=max_F,
-            db_threshold=pad_db_threshold,
-            noise_std=pad_noise_std,
-        ) 
+        except:
 
-        f_pad2, I_meas_pad, Q_meas_pad, _mask_meas = padder_1db_tail(
-            f_i,
-            s_meas.real.astype(np.float64),
-            s_meas.imag.astype(np.float64),
-            max_F=max_F,
-            db_threshold=pad_db_threshold,
-            noise_std=pad_noise_std,
-        ) """
+            f_pad, I_clean_pad, Q_clean_pad, _mask_clean = padder_1db_tail(
+                f_i,
+                s_clean.real.astype(np.float64),
+                s_clean.imag.astype(np.float64),
+                max_F=max_F,
+                db_threshold=pad_db_threshold,
+                noise_std=pad_noise_std,
+            ) 
+
+            f_pad2, I_meas_pad, Q_meas_pad, _mask_meas = padder_1db_tail(
+                f_i,
+                s_meas.real.astype(np.float64),
+                s_meas.imag.astype(np.float64),
+                max_F=max_F,
+                db_threshold=pad_db_threshold,
+                noise_std=pad_noise_std,
+            ) 
 
         F[i, :] = f_pad
 
@@ -408,6 +404,7 @@ def lorentzian_generator(
         X_meas[i, max_F:2*max_F] = Q_meas_pad.astype(np.float32)
 
     return F, X_meas, X_clean, kc_true, kappai_true, F_len, mask
+
 
 
 if __name__ == "__main__":

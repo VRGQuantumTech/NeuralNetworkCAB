@@ -13,6 +13,7 @@ from pathlib import Path
 from lorentzian import lorentzian as lorentzian_cy
 from network import Net
 from sctlib.analysis import Trace
+from lorentzian_generator import padder_optimum
 
 
 def load_trained_model(model_path: str) -> tuple[Net, dict]:
@@ -56,20 +57,17 @@ def load_iq_from_dat(dat_path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]
 
 
 
-def resample_iq_to_npoints(f: np.ndarray, I: np.ndarray, Q: np.ndarray, n_points: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Re-muestrea I y Q a n_points uniformemente en frecuencia usando interpolación lineal.
-    """
+""" def resample_iq_to_npoints(f: np.ndarray, I: np.ndarray, Q: np.ndarray, n_points: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     fmin, fmax = float(f[0]), float(f[-1])
     f_new = np.linspace(fmin, fmax, n_points, dtype=np.float64)
 
     I_new = np.interp(f_new, f, I).astype(np.float64)
     Q_new = np.interp(f_new, f, Q).astype(np.float64)
-    return f_new, I_new, Q_new
+    return f_new, I_new, Q_new """
 
 
 
-def build_nn_input_from_dat_iq(dat_path: str, input_dim: int) -> np.ndarray:
+def build_nn_input_from_dat_iq(trace: Trace, dat_path: str, input_dim: int) -> np.ndarray:
     """
     Construye el input para la NN como [I || Q].
     """
@@ -78,9 +76,9 @@ def build_nn_input_from_dat_iq(dat_path: str, input_dim: int) -> np.ndarray:
     n_points = input_dim // 2
 
     f, I, Q = load_iq_from_dat(dat_path)
-    _, I_rs, Q_rs = resample_iq_to_npoints(f, I, Q, n_points)
+    f_pad, I_clean_pad, Q_clean_pad, _ = padder_optimum(trace, max_F=20000)
 
-    X = np.concatenate([I_rs, Q_rs], axis=0).astype(np.float32)[None, :]
+    X = np.concatenate([I_clean_pad, Q_clean_pad], axis=0).astype(np.float32)[None, :]
     return X
 
 def predict_kc_nn(net: Net, X: np.ndarray) -> float:
@@ -105,19 +103,18 @@ def main():
 
     rel_errors = []
 
-    for dat_path in dat_files[:40]:
+    for dat_path in dat_files[80:130]:
         try:
             # --- One-shot ---
             trace = Trace()
-            trace.load_trace(source="cab", path=str(dat_path))
-            trace.baseline_polyfit(order=3, plot=True)
-            results = trace.do_fit(mode="one-shot", verbose=False)
+            trace.load_trace(source="CAB", path=str(dat_path))
+            results = trace.do_fit(mode="one-shot", baseline=(3, 0.7), verbose=False)
             plt.close("all")
             fit = results["one-shot"].final
             kc_oneshot = float(fit["kappac"])
 
             # --- NN ---
-            X_real = build_nn_input_from_dat_iq(str(dat_path), input_dim=input_dim)
+            X_real = build_nn_input_from_dat_iq(trace, str(dat_path), input_dim=input_dim)
             kc_nn = predict_kc_nn(net, X_real)
 
             # --- error relativo ---
@@ -126,9 +123,7 @@ def main():
                 rel_errors.append(rel_err)
 
         except Exception:
-            print("FALLÓ", dat_path.name)
-            traceback.print_exc()
-            continue
+            print(Exception)
 
     if len(rel_errors) == 0:
         print("No se pudo calcular el error (todos los ficheros fallaron).")
