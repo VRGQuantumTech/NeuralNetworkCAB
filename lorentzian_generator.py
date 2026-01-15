@@ -55,7 +55,7 @@ def padder_optimum(
     baseline, poly = trace.baseline_polyfit(scale=20.0, order=order, plot=False)
     baseline = np.asarray(baseline, dtype=np.float64)
 
-    # 4) baseline extendido
+
     if poly is not None:
         # Caso bueno: usar el poly (evaluado en Hz)
         baseline_ext = np.asarray(poly(f_pad), dtype=np.float64)
@@ -90,7 +90,7 @@ def padder_optimum(
         # (si no lo quieres, quita estas 2 líneas)
         bmin = max(1e-12, 0.05 * float(np.median(np.abs(baseline[-10:])) + 1e-30))
         baseline_ext = np.maximum(baseline_ext, bmin)
-
+    
     # 5) fase extendida
     phase_delay_ext = np.exp(1j * (delay_guessed * f_pad + phi0_guessed))
 
@@ -105,7 +105,6 @@ def padder_optimum(
     if pad_len > 0:
         s_corr[Fi:] = s_base * baseline_ext[Fi:] * phase_delay_ext[Fi:]
 
-        # micro-corrección de continuidad en el primer punto padded
         if np.abs(s_corr[Fi]) > 1e-15:
             s_corr[Fi:] *= s_corr[Fi - 1] / s_corr[Fi]
 
@@ -301,7 +300,17 @@ def lorentzian_generator(
     p = np.array([0.05, 0.05, 0.10, 0.25, 0.25, 0.30], dtype=float)  
     p = p / p.sum()
 
+    progress_marks = {25, 50, 75, 100}
+    printed_marks = set()
+
     for i, kc in enumerate(kc_true):
+        percent = int(100 * (i + 1) / n_samples)
+
+        for m in sorted(progress_marks):
+            if percent >= m and m not in printed_marks:
+                print(f"{m}% de la generación completado")
+                printed_marks.add(m)
+            
         Fi = int(np.random.choice(freqs, p=p))
         F_len[i] = Fi
         mask[i, :Fi] = 1.0
@@ -322,7 +331,7 @@ def lorentzian_generator(
         kappa = kappai + kc_f
         r = kc_f / kappa
 
-        nRange = np.random.uniform(100, 500)
+        nRange = np.random.uniform(25, 400)
         delta_f_max = nRange * kappa
 
         f_i = np.linspace(fr - delta_f_max, fr + delta_f_max, Fi, dtype=np.float64)
@@ -344,7 +353,17 @@ def lorentzian_generator(
         Q_clean = s_clean.imag * (1 - eps)
         s_clean = I_clean + 1j * Q_clean
 
-        s_meas = s_clean.copy()
+
+        trace_clean = Trace(frequency=f_i, trace=s_clean)
+
+        f_pad, I_clean_pad, Q_clean_pad, _ = padder_optimum(
+            trace_clean,
+            max_F=max_F,
+            order=poly_deg_range,
+        )
+
+        s_clean_pad = I_clean_pad.astype(np.float64) + 1j * Q_clean_pad.astype(np.float64)
+        s_meas_pad = s_clean_pad.copy()
 
         if isinstance(noise_std_signal, tuple):
             sig = float(np.random.uniform(noise_std_signal[0], noise_std_signal[1]))
@@ -352,56 +371,37 @@ def lorentzian_generator(
             sig = float(noise_std_signal)
 
         if sig > 0.0:
-            s_meas = s_meas + (
-                np.random.normal(0.0, sig, size=Fi) +
-                1j*np.random.normal(0.0, sig, size=Fi)
+            s_meas_pad = s_meas_pad + (
+                np.random.normal(0.0, sig, size=max_F) +
+                1j*np.random.normal(0.0, sig, size=max_F)
             )
 
-        trace_clean = Trace(frequency=f_i, trace=s_clean)
-        trace_meas  = Trace(frequency=f_i, trace=s_meas)
 
+        """ f_pad, I_clean_pad, Q_clean_pad, _mask_clean = padder_1db_tail(
+            f_i,
+            s_clean.real.astype(np.float64),
+            s_clean.imag.astype(np.float64),
+            max_F=max_F,
+            db_threshold=pad_db_threshold,
+            noise_std=pad_noise_std,
+        ) 
 
-        try: 
-            f_pad, I_clean_pad, Q_clean_pad, _ = padder_optimum(
-                trace_clean,
-                max_F=max_F,
-                order=poly_deg_range,
-            )
-
-            f_pad, I_meas_pad, Q_meas_pad, _ = padder_optimum(
-                trace_meas,
-                max_F=max_F,
-                noise=sig,
-                order=poly_deg_range,
-            )
-
-        except:
-
-            f_pad, I_clean_pad, Q_clean_pad, _mask_clean = padder_1db_tail(
-                f_i,
-                s_clean.real.astype(np.float64),
-                s_clean.imag.astype(np.float64),
-                max_F=max_F,
-                db_threshold=pad_db_threshold,
-                noise_std=pad_noise_std,
-            ) 
-
-            f_pad2, I_meas_pad, Q_meas_pad, _mask_meas = padder_1db_tail(
-                f_i,
-                s_meas.real.astype(np.float64),
-                s_meas.imag.astype(np.float64),
-                max_F=max_F,
-                db_threshold=pad_db_threshold,
-                noise_std=pad_noise_std,
-            ) 
+        f_pad2, I_meas_pad, Q_meas_pad, _mask_meas = padder_1db_tail(
+            f_i,
+            s_meas.real.astype(np.float64),
+            s_meas.imag.astype(np.float64),
+            max_F=max_F,
+            db_threshold=pad_db_threshold,
+            noise_std=pad_noise_std,
+        )  """
 
         F[i, :] = f_pad
 
-        X_clean[i, :max_F] = I_clean_pad.astype(np.float32)
-        X_clean[i, max_F:2*max_F] = Q_clean_pad.astype(np.float32)
+        X_clean[i, :max_F] = s_clean_pad.real.astype(np.float32)
+        X_clean[i, max_F:2*max_F] = s_clean_pad.imag.astype(np.float32)
 
-        X_meas[i, :max_F] = I_meas_pad.astype(np.float32)
-        X_meas[i, max_F:2*max_F] = Q_meas_pad.astype(np.float32)
+        X_meas[i, :max_F] = s_meas_pad.real.astype(np.float32)
+        X_meas[i, max_F:2*max_F] = s_meas_pad.imag.astype(np.float32)
 
     return F, X_meas, X_clean, kc_true, kappai_true, F_len, mask
 
@@ -425,7 +425,7 @@ if __name__ == "__main__":
         cavity_params=cavity_params,
         kc_limits=kc_limits,
         frequency_points=[2000, 5000, 6000, 10000, 15000, 20000],
-        noise_std_signal=0.0,
+        noise_std_signal=0.005,
     )
 
     i=2

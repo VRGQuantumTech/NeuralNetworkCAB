@@ -1,9 +1,9 @@
 import traceback
 import matplotlib
-matplotlib.use("Agg")   # ← NO ventanas (quitar si inference individual)
+#matplotlib.use("Agg")   # ← NO ventanas (quitar si inference individual)
 
 import matplotlib.pyplot as plt
-plt.show = lambda *args, **kwargs: None  
+#plt.show = lambda *args, **kwargs: None  
 
 import io
 import numpy as np
@@ -103,11 +103,14 @@ def main():
 
     rel_errors = []
 
-    for dat_path in dat_files[80:130]:
+    """ for dat_path in dat_files[80:100]:
         try:
             # --- One-shot ---
             trace = Trace()
             trace.load_trace(source="CAB", path=str(dat_path))
+            f_trace,trace_I,trace_Q,_=padder_optimum(trace, max_F=20000)
+            trace.trace= trace_I + 1j*trace_Q
+            trace.frequency = f_trace
             results = trace.do_fit(mode="one-shot", baseline=(3, 0.7), verbose=False)
             plt.close("all")
             fit = results["one-shot"].final
@@ -119,8 +122,8 @@ def main():
 
             # --- error relativo ---
             if kc_oneshot > 0:
-                rel_err = abs(kc_nn - kc_oneshot) / kc_oneshot
-                rel_errors.append(rel_err)
+                log_err = abs(np.log(kc_nn) - np.log(kc_oneshot))
+                rel_errors.append(log_err)
 
         except Exception:
             print(Exception)
@@ -132,10 +135,10 @@ def main():
     rel_errors = np.asarray(rel_errors, dtype=np.float64)
 
     print(f"Archivos evaluados: {rel_errors.size}")
-    print(f"Error relativo medio (NN vs one-shot): {rel_errors.mean():.3%}")
-    print(f"Desviación típica: {rel_errors.std(ddof=1) if rel_errors.size > 1 else 0.0:.3%}") 
+    print(f"Error relativo medio log (NN vs one-shot): {rel_errors.mean():.3%}")
+    print(f"Desviación típica: {rel_errors.std(ddof=1) if rel_errors.size > 1 else 0.0:.3%}")   """
 
-    """ DAT_PATH = dat_files[38]
+    DAT_PATH = dat_files[5]
 
     # Experimental (.dat)
     f_exp, I_exp, Q_exp = load_iq_from_dat(DAT_PATH)
@@ -144,8 +147,11 @@ def main():
 
     # One-shot  
     trace = Trace()
-    trace.load_trace(source="cab", path=str(DAT_PATH))
-    results = trace.do_fit(baseline=(3, 0.7), mode="one-shot", verbose=False)
+    trace.load_trace(source="CAB", path=str(DAT_PATH))
+    f_trace,trace_I,trace_Q,_=padder_optimum(trace, max_F=20000)
+    trace.trace= trace_I + 1j*trace_Q
+    trace.frequency = f_trace
+    results = trace.do_fit(mode="one-shot", baseline=(3, 0.7), verbose=False)
 
     fit = results["one-shot"].final
     kc_oneshot = float(fit["kappac"])
@@ -161,7 +167,7 @@ def main():
 
     # Neural Network (kc) 
     net, ckpt = load_trained_model(MODEL_PATH)
-    X_real = build_nn_input_from_dat_iq(str(DAT_PATH), input_dim=int(ckpt["input_dim"]))
+    X_real = build_nn_input_from_dat_iq(trace, str(DAT_PATH), input_dim=int(ckpt["input_dim"]))
     kc_nn = predict_kc_nn(net, X_real)
 
     # Para reconstruir la curva NN: mantengo kappa_i del one-shot y cambio kappa_c
@@ -254,7 +260,7 @@ def main():
     print(f"Kc one-shot: {kc_oneshot:.3}")
     print(f"Kc (NN): {kc_nn:.3}")
     print(f"Error: {abs(kc_nn - kc_oneshot) / kc_oneshot if kc_oneshot > 0 else 0.0:.3%}")
- """
+
 
 if __name__ == "__main__":
     main()
