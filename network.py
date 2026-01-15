@@ -1,6 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import numpy as np
+from torch.utils.data import TensorDataset, DataLoader
+
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -99,9 +102,12 @@ class Net(nn.Module):
 
         return self.out(h)
 
-    def fit(self, X, y):
-        Xt = np_to_th(X)
-        yt = np_to_th(y)
+    def fit(self, X, y, batch_size=64, shuffle=True):
+        Xt = torch.from_numpy(np.asarray(X, dtype=np.float32))
+        yt = torch.from_numpy(np.asarray(y, dtype=np.float32))
+
+        ds = TensorDataset(Xt, yt)
+        dl = DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=False)
 
         optimiser = optim.Adam(self.parameters(), lr=self.lr)
         self.train()
@@ -110,15 +116,27 @@ class Net(nn.Module):
         log_every = max(1, self.epochs // 10)
 
         for ep in range(self.epochs):
-            optimiser.zero_grad()
-            outputs = self.forward(Xt)
-            loss = self.loss(yt, outputs)
-            loss.backward()
-            optimiser.step()
+            running = 0.0
+            n = 0
 
-            losses.append(float(loss.item()))
+            for xb, yb in dl:
+                xb = xb.to(DEVICE, non_blocking=True)
+                yb = yb.to(DEVICE, non_blocking=True)
+
+                optimiser.zero_grad(set_to_none=True)
+                out = self.forward(xb)
+                loss = self.loss(yb, out)
+                loss.backward()
+                optimiser.step()
+
+                running += float(loss.item()) * xb.size(0)
+                n += xb.size(0)
+
+            epoch_loss = running / max(1, n)
+            losses.append(epoch_loss)
+
             if ep % log_every == 0:
-                print(f"Epoch {ep}/{self.epochs}, loss: {losses[-1]:.6f}")
+                print(f"Epoch {ep}/{self.epochs}, loss: {epoch_loss:.6f}")
 
         return losses
 
