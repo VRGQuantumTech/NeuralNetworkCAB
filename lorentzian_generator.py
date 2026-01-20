@@ -1,8 +1,13 @@
 import numpy as np
 from lorentzian import lorentzian as lorentzian_cy
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+plt.show = lambda *args, **kwargs: None  
 from sctlib.analysis import Trace
 from sctlib.analysis.trace.support._one_shot_fit import _guess_phase_delay, guess_kappa, guess_amplitude
+import os
+from pathlib import Path
 
 def padder_optimum(
     trace,
@@ -136,108 +141,6 @@ def padder_optimum(
 
 
 
-
-def padder_1db_tail(
-    f, I, Q,
-    max_F,
-    db_threshold=1.0,
-    noise_std=0.0,
-):
-    """
-    Padding físico desde el final de la traza.
-    
-    Parámetros
-    ----------
-    f, I, Q : arrays (Fi,)
-        Traza real
-    max_F : int
-        Longitud final deseada
-    db_threshold : float
-        Umbral en dB (por defecto 1 dB)
-    noise_std : float
-        Ruido gaussiano opcional en el padding
-
-    Returns
-    -------
-    f_pad, I_pad, Q_pad : arrays (max_F,)
-    mask : (max_F,)  -> 1 real, 0 padding
-    """
-    Fi = len(f)
-    assert Fi <= max_F
-
-    amp = np.sqrt(I**2 + Q**2)
-
-    # umbral = 1 dB
-    amp_ref = amp[-1]
-    amp_min = amp_ref * 10 ** (-db_threshold / 20)
-
-    idx = Fi - 1
-    while idx > 0 and amp[idx] > amp_min:
-        idx -= 1
-
-    # tramo válido para padding
-    I_tail = I[idx:Fi]
-    Q_tail = Q[idx:Fi]
-    f_tail = f[idx:Fi]
-
-    pad_len = max_F - Fi
-
-    if pad_len > 0:
-        # repetir el tramo final
-        rep = int(np.ceil(pad_len / len(I_tail)))
-
-        I_pad_tail = np.tile(I_tail, rep)[:pad_len]
-        Q_pad_tail = np.tile(Q_tail, rep)[:pad_len]
-
-        if noise_std > 0:
-            I_pad_tail += np.random.normal(0, noise_std, pad_len)
-            Q_pad_tail += np.random.normal(0, noise_std, pad_len)
-
-        # freq extrapolada
-        df = f[-1] - f[-2] if Fi > 1 else 1.0
-        f_pad_tail = f[-1] + df * np.arange(1, pad_len + 1)
-
-        I_out = np.concatenate([I, I_pad_tail])
-        Q_out = np.concatenate([Q, Q_pad_tail])
-        f_out = np.concatenate([f, f_pad_tail])
-
-    else:
-        I_out, Q_out, f_out = I, Q, f
-
-    # Mask
-    mask = np.zeros(max_F, dtype=np.float32)
-    mask[:Fi] = 1.0
-
-    return f_out, I_out, Q_out, mask
-
-
-def _random_poly_response(x: np.ndarray,
-                          deg_min: int = 1,
-                          deg_max: int = 5,
-                          coeff_scale: float = 0.25
-                          ) -> np.ndarray:
-        
-    deg = int(np.random.randint(deg_min, deg_max + 1))
-    coef = np.random.normal(0.0, coeff_scale, size=deg + 1)
-    coef[0] = 0.0
-
-    a = np.zeros_like(x, dtype=np.float64)
-    xp = np.ones_like(x, dtype=np.float64)
-    for k in range(deg + 1):
-        a += coef[k] * xp
-        xp *= x
-    
-    # In this way, the polynomial is always positive (NEW)
-    a = np.exp(a)
-    
-    # if ensure_positive:
-    #     a = a - np.min(a)
-    #     a = 0.2 + a
-        
-    a = a / (np.mean(np.abs(a)) + 1e-12)
-    return a
-
-
 def _apply_random_poly_to_magnitude_only(
     f: np.ndarray,
     s: np.ndarray,
@@ -267,14 +170,50 @@ def _apply_random_poly_to_magnitude_only(
     return mag2 * np.exp(1j * phase)
 
 
+def _random_poly_response(x: np.ndarray,
+                          deg_min: int = 1,
+                          deg_max: int = 5,
+                          coeff_scale: float = 0.25
+                          ) -> np.ndarray:
+        
+    deg = int(np.random.randint(deg_min, deg_max + 1))
+    coef = np.random.normal(0.0, coeff_scale, size=deg + 1)
+    coef[0] = 0.0
+
+    a = np.zeros_like(x, dtype=np.float64)
+    xp = np.ones_like(x, dtype=np.float64)
+    for k in range(deg + 1):
+        a += coef[k] * xp
+        xp *= x
+    
+    # In this way, the polynomial is always positive (NEW)
+    a = np.exp(a)
+    
+    # if ensure_positive:
+    #     a = a - np.min(a)
+    #     a = 0.2 + a
+        
+    a = a / (np.mean(np.abs(a)) + 1e-12)
+    return a
+
+
+def _kc_tag(kc: float) -> str:
+    # Ej: 1.234e+05 -> 1p234e05
+    s = f"{kc:.6e}"          
+    s = s.replace("+", "")   # e+05 -> e05
+    s = s.replace(".", "p")  # 1.234 -> 1p234
+    return s
+
+
 def lorentzian_generator(
     n_samples: int,
     cavity_params: dict,
     kc_limits: tuple[float, float],
     frequency_points=(2000, 5000, 6000, 10000, 15000, 20000),
     noise_std_signal: float | tuple[float, float] = 0.0,
-    pad_db_threshold: float = 1.0,
-    pad_noise_std: float = 1e-4,
+    save_debug_dataset: bool = False,
+    save_dir: str = "Dataset",
+    debug_dpi: int = 300,
 ):
     """
       - Genera cada muestra con un Fi aleatorio (de frequency_points).
@@ -283,6 +222,10 @@ def lorentzian_generator(
     """
     frequency_points = np.asarray(frequency_points, dtype=int)
     max_F = int(frequency_points.max())
+
+    out_dir = Path(save_dir)
+    if save_debug_dataset:
+        out_dir.mkdir(parents=True, exist_ok=True)
 
     kappai_true = np.zeros(n_samples, dtype=np.float32)
 
@@ -297,8 +240,6 @@ def lorentzian_generator(
     mask = np.zeros((n_samples, max_F), dtype=np.float32)
 
     freqs = np.array(frequency_points, dtype=int)
-    p = np.array([0.05, 0.05, 0.10, 0.25, 0.25, 0.30], dtype=float)  
-    p = p / p.sum()
 
     progress_marks = {25, 50, 75, 100}
     printed_marks = set()
@@ -311,7 +252,7 @@ def lorentzian_generator(
                 print(f"{m}% de la generación completado")
                 printed_marks.add(m)
             
-        Fi = int(np.random.choice(freqs, p=p))
+        Fi = int(np.random.choice(freqs))
         F_len[i] = Fi
         mask[i, :Fi] = 1.0
 
@@ -376,25 +317,6 @@ def lorentzian_generator(
                 1j*np.random.normal(0.0, sig, size=max_F)
             )
 
-
-        """ f_pad, I_clean_pad, Q_clean_pad, _mask_clean = padder_1db_tail(
-            f_i,
-            s_clean.real.astype(np.float64),
-            s_clean.imag.astype(np.float64),
-            max_F=max_F,
-            db_threshold=pad_db_threshold,
-            noise_std=pad_noise_std,
-        ) 
-
-        f_pad2, I_meas_pad, Q_meas_pad, _mask_meas = padder_1db_tail(
-            f_i,
-            s_meas.real.astype(np.float64),
-            s_meas.imag.astype(np.float64),
-            max_F=max_F,
-            db_threshold=pad_db_threshold,
-            noise_std=pad_noise_std,
-        )  """
-
         F[i, :] = f_pad
 
         X_clean[i, :max_F] = s_clean_pad.real.astype(np.float32)
@@ -402,6 +324,86 @@ def lorentzian_generator(
 
         X_meas[i, :max_F] = s_meas_pad.real.astype(np.float32)
         X_meas[i, max_F:2*max_F] = s_meas_pad.imag.astype(np.float32)
+
+
+        if save_debug_dataset:
+            tag = _kc_tag(float(kc_true[i]))
+
+            Fi_local = int(F_len[i])
+
+            # Para plots vs frecuencia 
+            f_i_real = F[i, :Fi_local]
+            f_GHz = f_i_real * 1e-9
+
+            I_real = X_meas[i, :Fi_local]
+            Q_real = X_meas[i, max_F:max_F + Fi_local]
+            amp_real = np.sqrt(I_real**2 + Q_real**2)
+            phase_real = np.unwrap(np.arctan2(Q_real, I_real))
+
+            # Para IQ: lo que ve la NN (Fmax completo)
+            I_full = X_meas[i, :max_F]
+            Q_full = X_meas[i, max_F:2*max_F]
+
+            # Plot PHASE_{kc}.png
+            plt.figure(dpi=debug_dpi)
+            plt.plot(f_GHz, phase_real)
+            plt.xlabel("Frequency [GHz]")
+            plt.ylabel("Phase [rad]")
+            plt.title(f"Phase (kc = {kc_true[i]:.2e})")
+            plt.gca().tick_params(direction="in", which="both")
+            plt.tight_layout()
+            plt.savefig(out_dir / f"phase_{tag}.png")
+            plt.close()
+
+            # Plot AMP_{kc}.png 
+            plt.figure(dpi=debug_dpi)
+            plt.plot(f_GHz, amp_real, linestyle="--")
+            plt.xlabel("Frequency [GHz]")
+            plt.ylabel("Amplitude")
+            plt.title(f"Amp (kc = {kc_true[i]:.2e})")
+            plt.gca().tick_params(direction="in", which="both")
+            plt.tight_layout()
+            plt.savefig(out_dir / f"Amp_{tag}.png")
+            plt.close()
+
+            # Plot IQ_{kc}.png (FULL f)
+            plt.figure(dpi=debug_dpi)
+            plt.plot(I_full, Q_full, label="IQ (full F)")
+            plt.scatter(I_full[0], Q_full[0], label="Start", zorder=3)
+            if Fi_local > 0:
+                plt.scatter(I_full[Fi_local - 1], Q_full[Fi_local - 1], label="End real", zorder=3)
+            plt.xlabel("I (Re{S21})")
+            plt.ylabel("Q (Im{S21})")
+            plt.title(f"IQ FULL (kc = {kc_true[i]:.2e})")
+            plt.legend()
+            plt.axis("equal")
+            plt.gca().tick_params(direction="in", which="both")
+            plt.tight_layout()
+            plt.savefig(out_dir / f"IQ_{tag}.png")
+            plt.close()
+
+            # Params_{kc}.dat
+            params_path = out_dir / f"Params_{tag}.dat"
+            with open(params_path, "w", encoding="utf-8") as fp:
+                fp.write(f"i={i}\n")
+                fp.write(f"Fi={Fi_local}\n")
+                fp.write(f"max_F={max_F}\n")
+                fp.write(f"kc_true={float(kc_true[i])}\n")
+                fp.write(f"kappai={float(kappai_true[i])}\n")
+                fp.write(f"ac={ac}\n")
+                fp.write(f"dt={dt}\n")
+                fp.write(f"fr={fr}\n")
+                fp.write(f"dphi={dphi}\n")
+                fp.write(f"phi={phi}\n")
+                fp.write(f"poly_deg_range={int(poly_deg_range)}\n")
+                fp.write(f"eps={eps}\n")
+                fp.write(f"c0_real={float(np.real(c0))}\n")
+                fp.write(f"c0_imag={float(np.imag(c0))}\n")
+                fp.write(f"nRange={float(nRange)}\n")
+                fp.write(f"delta_f_max={float(delta_f_max)}\n")
+                fp.write(f"kappa={float(kappa)}\n")
+                fp.write(f"r={float(r)}\n")
+                fp.write(f"noise_std_signal_used={float(sig)}\n")
 
     return F, X_meas, X_clean, kc_true, kappai_true, F_len, mask
 
@@ -420,12 +422,12 @@ if __name__ == "__main__":
     kc_limits = (1e4, 1e5)
 
 
-    F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
+    """ F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
         n_samples=3,
         cavity_params=cavity_params,
         kc_limits=kc_limits,
         frequency_points=[2000, 5000, 6000, 10000, 15000, 20000],
-        noise_std_signal=0.005,
+        noise_std_signal=0.0,
     )
 
     i=2
@@ -468,25 +470,31 @@ if __name__ == "__main__":
     ax[1].tick_params(direction='in', which='both')
     plt.show()
 
-    I = X_meas[i, :Fi]
-    Q = X_meas[i, max_F:max_F + Fi]
+
+    I_full = X_meas[i, :max_F]
+    Q_full = X_meas[i, max_F:2*max_F]
 
     plt.figure()
-    plt.plot(I, Q, label="IQ trajectory")
-    plt.scatter(I[0], Q[0], label="Start", zorder=3)
-    plt.scatter(I[-1], Q[-1], label="End", zorder=3)
+    plt.plot(I_full, Q_full, label="IQ trajectory (full F)")
+    plt.scatter(I_full[0], Q_full[0], label="Start", zorder=3)
+    plt.scatter(
+        I_full[Fi-1], Q_full[Fi-1],
+        label="End real data", zorder=3
+    )
     plt.xlabel("I (Re{S21})")
     plt.ylabel("Q (Im{S21})")
-    plt.title(f"IQ plot (kc = {kc_true[i]:.2e})")
+    plt.title(f"IQ plot FULL (kc = {kc_true[i]:.2e})")
     plt.legend()
     plt.axis("equal")
+
     ax = plt.gca()
-    ax.tick_params(direction='in', which='both')
+    ax.tick_params(direction="in", which="both")
     plt.show()
 
 
     
-
+    I = X_meas[i, :Fi]
+    Q = X_meas[i, max_F:max_F + Fi]
     mag = np.sqrt(I**2 + Q**2)        
     f_GHz = f * 1e-9
 
@@ -502,5 +510,15 @@ if __name__ == "__main__":
     ax.legend(frameon=False)
 
     ax.tick_params(direction="in", which="both", top=True, right=True)
-    plt.show()
+    plt.show() """
+
+    F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
+        n_samples=100,
+        cavity_params=cavity_params,
+        kc_limits=kc_limits,
+        frequency_points=[2000, 5000, 6000, 10000, 15000, 20000],
+        noise_std_signal=(0.0, 0.01),
+        save_debug_dataset=True,
+        save_dir="Dataset_demo",
+    )
 

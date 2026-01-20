@@ -21,10 +21,13 @@ def load_trained_model(model_path: str) -> tuple[Net, dict]:
 
     net = Net(
         input_dim=int(ckpt["input_dim"]),
-        output_dim=int(ckpt["output_dim"]),
+        output_dim=int(ckpt.get("output_dim", 1)),
         n_units=int(ckpt["n_units"]),
         epochs=1,
         lr=1e-3,
+        conv_channels=int(ckpt.get("conv_channels", 64)),
+        kernel_size=int(ckpt.get("kernel_size", 9)),
+        dropout=float(ckpt.get("dropout", 0.10)),
     )
     net.load_state_dict(ckpt["model_state_dict"])
     net.eval()
@@ -73,12 +76,19 @@ def build_nn_input_from_dat_iq(trace: Trace, dat_path: str, input_dim: int) -> n
     """
     if input_dim % 2 != 0:
         raise ValueError("input_dim debe ser par (I||Q).")
-    n_points = input_dim // 2
 
-    f, I, Q = load_iq_from_dat(dat_path)
-    f_pad, I_clean_pad, Q_clean_pad, _ = padder_optimum(trace, max_F=20000)
+    _f, _I, _Q = load_iq_from_dat(dat_path)
 
-    X = np.concatenate([I_clean_pad, Q_clean_pad], axis=0).astype(np.float32)[None, :]
+    f_pad, I_pad, Q_pad, _ = padder_optimum(trace, max_F=input_dim // 2)
+
+    X_full = np.concatenate([I_pad, Q_pad], axis=0).astype(np.float64)
+    mu = X_full.mean()
+    std = X_full.std() + 1e-8
+
+    I_pad = (I_pad - mu) / std
+    Q_pad = (Q_pad - mu) / std
+
+    X = np.concatenate([I_pad, Q_pad], axis=0).astype(np.float32)[None, :]
     return X
 
 def predict_kc_nn(net: Net, X: np.ndarray) -> float:
@@ -102,9 +112,12 @@ def main():
     input_dim = int(ckpt["input_dim"])
 
     rel_errors = []
+    freq_errors=[]
 
-    for dat_path in dat_files[80:100]:
+    for dat_path in dat_files[:80]:
         try:
+            f_raw, _, _ = load_iq_from_dat(dat_path)
+            Fi = len(f_raw)
             # --- One-shot ---
             trace = Trace()
             trace.load_trace(source="CAB", path=str(dat_path))
@@ -124,6 +137,8 @@ def main():
             if kc_oneshot > 0:
                 log_err = abs(np.log(kc_nn) - np.log(kc_oneshot))
                 rel_errors.append(log_err)
+                freq_errors.append(Fi)
+
 
         except Exception:
             print(Exception)
@@ -136,7 +151,9 @@ def main():
 
     print(f"Archivos evaluados: {rel_errors.size}")
     print(f"Error relativo medio log (NN vs one-shot): {rel_errors.mean():.3%}")
-    print(f"Desviación típica: {rel_errors.std(ddof=1) if rel_errors.size > 1 else 0.0:.3%}")   
+    print(f"Desviación típica: {rel_errors.std(ddof=1) if rel_errors.size > 1 else 0.0:.3%}")
+    print(f"Real errors: {rel_errors}")
+    print(f"Frequency errors: {freq_errors}")
 
     """ DAT_PATH = dat_files[5]
 

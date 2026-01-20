@@ -1,10 +1,12 @@
 from sctlib.analysis import Trace
-
-trace = Trace()
+import torch
+""" trace = Trace()
 trace.load_trace(source='cab')
 results = trace.do_fit(baseline=(3, 0.7), mode="one-shot", verbose=True)
-print(results["one-shot"].final)
- 
+print(results["one-shot"].final) """
+
+print("CUDA available:", torch.cuda.is_available())
+print("CUDA device count:", torch.cuda.device_count())
 
 """ import numpy as np
 import matplotlib.pyplot as plt

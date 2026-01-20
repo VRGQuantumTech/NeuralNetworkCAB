@@ -10,6 +10,7 @@ import random
 import warnings
 from numpy.polynomial.polyutils import RankWarning
 warnings.simplefilter("ignore", RankWarning)
+import torch.nn as nn
 
 def main():    
 
@@ -25,7 +26,7 @@ def main():
     kc_limits = (1e4, 1e5)
 
     F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
-        n_samples=10000,
+        n_samples=20000,
         cavity_params=cavity_params,
         kc_limits=kc_limits,
         frequency_points=[2000, 5000, 6000, 10000, 15000, 20000],     
@@ -35,7 +36,11 @@ def main():
     
 
     y = np.log(kc_true).reshape(-1, 1).astype(np.float32)
-    X = X_meas.astype(np.float32)
+
+    max_F = mask.shape[1]  
+    X_iq = X_meas.astype(np.float32)          
+    X_m  = mask.astype(np.float32)            
+    X = np.concatenate([X_iq, X_m], axis=1)
 
     idx = np.random.permutation(len(X))
     split = int(0.8 * len(X))
@@ -49,18 +54,39 @@ def main():
     X_train, y_train = X[train_idx], y[train_idx]
     X_test,  y_test  = X[test_idx],  y[test_idx]
 
+    iq_dim = 2 * max_F
+    X_train_iq = X_train[:, :iq_dim]
+    X_train_m  = X_train[:, iq_dim:]          # (N, max_F)
+
+    mu_train  = X_train_iq.mean(axis=1, keepdims=True)
+    std_train = X_train_iq.std(axis=1, keepdims=True) + 1e-8
+    X_train_iq = (X_train_iq - mu_train) / std_train
+
+    X_train = np.concatenate([X_train_iq, X_train_m], axis=1).astype(np.float32)
+
+    # Test
+    X_test_iq = X_test[:, :iq_dim]
+    X_test_m  = X_test[:, iq_dim:]
+
+    mu_test  = X_test_iq.mean(axis=1, keepdims=True)
+    std_test = X_test_iq.std(axis=1, keepdims=True) + 1e-8
+    X_test_iq = (X_test_iq - mu_test) / std_test
+
+    X_test = np.concatenate([X_test_iq, X_test_m], axis=1).astype(np.float32)
+
     net = Net(
         input_dim=X_train.shape[1],
         output_dim=1,
-        n_units=128,
-        epochs=2000,
+        n_units=256,
+        epochs=500,
         lr=1e-3,
+        loss=nn.HuberLoss(delta=0.5)
     )
 
     losses = net.fit(X_train, y_train, batch_size=64)  
 
-    y_pred_train = net.predict(X_train)
-    y_pred_test = net.predict(X_test)
+    y_pred_train = net.predict(X_train, batch_size=256)
+    y_pred_test  = net.predict(X_test,  batch_size=256)
 
     kc_pred_train = np.exp(y_pred_train).flatten()
     kc_true_train = np.exp(y_train).flatten()
@@ -81,9 +107,9 @@ def main():
         "output_dim": 1,
         "n_units": net.n_units,
         "kc_limits": kc_limits,
-        "conv_channels": net.conv.out_channels,
-        "kernel_size": net.conv.kernel_size[0],
-        "dropout": 0.10,
+        "conv_channels": net.conv_channels,
+        "kernel_size": net.kernel_size,
+        "dropout": net.dropout,
     }, model_path)
 
     print(f"Model saved to {model_path}")
