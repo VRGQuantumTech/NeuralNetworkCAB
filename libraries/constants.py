@@ -12,8 +12,8 @@ import numpy as np
 from typing       import Final, Dict
 from numpy.random import uniform,randint
 
-MIN_LENGTH  = 10000
-MAX_LENGTH  = 40000
+MIN_LENGTH  = 5000
+MAX_LENGTH  = 20000
 
 MIN_POLY_ORDER = 0
 MAX_POLY_ORDER = 3

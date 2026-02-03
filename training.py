@@ -43,7 +43,7 @@ def main():
 
     F, X_meas, X_clean, kc_true, kappai_true, F_len, mask, dfs = lorentzian_generator(
         n_samples=15000,
-        noise_std_signal=(0.001, 0.007),
+        noise_std_signal=0.0,
     )
 
     
