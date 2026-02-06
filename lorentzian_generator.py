@@ -220,6 +220,12 @@ def lorentzian_generator(
         kappai_true[index] = params['kappai']
 
         delta_f_max = sweep_factor * params['kappa']
+
+        """ if np.random.rand() < 0.8:
+            span_hz = np.random.choice([2e6, 3.5e6, 4e6, 9e6])
+        else:
+            span_hz = np.random.uniform(2e6, 9e6)
+        delta_f_max = span_hz / 2.0 """
         
         # Generate the frequency array
         f_i = np.linspace(params['fr'] - delta_f_max, 
@@ -410,7 +416,7 @@ def lorentzian_generator(
 
 if __name__ == "__main__":
     
-    F, X_meas, X_clean, kc_true, kappai_true, F_len, mask, dfs = lorentzian_generator(
+    """ F, X_meas, X_clean, kc_true, kappai_true, F_len, mask, dfs = lorentzian_generator(
         n_samples=3,
         noise_std_signal=0,
     )
@@ -495,12 +501,12 @@ if __name__ == "__main__":
     ax.legend(frameon=False)
 
     ax.tick_params(direction="in", which="both", top=True, right=True)
-    plt.show() 
+    plt.show()  """
 
-    """ F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
+    F, X_meas, X_clean, kc_true, kappai_true, F_len, mask, dfs = lorentzian_generator(
         n_samples          = 100,
-        noise_std_signal   = (0.0, 0.01),
+        noise_std_signal   = 0.0,
         save_debug_dataset = True,
         save_dir           = "Dataset_demo",
-    ) """
+    ) 
 

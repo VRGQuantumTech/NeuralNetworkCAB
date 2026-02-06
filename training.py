@@ -11,6 +11,7 @@ import warnings
 from numpy.polynomial.polyutils import RankWarning
 warnings.simplefilter("ignore", RankWarning)
 import torch.nn as nn
+from libraries.constants import GLOBAL_F_SCALE
 
 
 def masked_mean_std_iq(X_iq, M, max_F, eps=1e-8):
@@ -35,7 +36,24 @@ def masked_mean_std_iq(X_iq, M, max_F, eps=1e-8):
     Q_n = (Q - muQ) / stdQ
 
     X_iq_n = np.concatenate([I_n, Q_n], axis=1).astype(np.float32)
-    return X_iq_n
+    return X_iq_n 
+
+def build_f_norm_fixed(F, M, eps=1e-12, scale_val=GLOBAL_F_SCALE):
+    """
+    F: (N, max_F) padded
+    M: (N, max_F) mask 0/1
+    - Centra cada traza respecto a su media (mu) en zona válida (mask)
+    - Escala SIEMPRE con una constante global (scale_val), preservando unidades
+    """
+    F = F.astype(np.float64, copy=False)
+    M = M.astype(np.float32, copy=False)
+
+    denom = np.sum(M, axis=1, keepdims=True) + eps
+    mu = np.sum(F * M, axis=1, keepdims=True) / denom
+
+    Fc = (F - mu) * M  # padding -> 0
+    F_norm = (Fc / float(scale_val)).astype(np.float32)
+    return F_norm
 
 
 def main():    
@@ -53,12 +71,12 @@ def main():
     max_F = mask.shape[1]  
     X_iq = X_meas.astype(np.float32)          
     X_m  = mask.astype(np.float32)
+    F_norm = build_f_norm_fixed(F, X_m)
 
 
-    X = np.concatenate([X_iq, X_m], axis=1).astype(np.float32)
+    X = np.concatenate([X_iq, X_m, F_norm], axis=1).astype(np.float32)
 
 
-    df_scalars = (dfs / 1e6).reshape(-1, 1).astype(np.float32)
 
     
     idx = np.random.permutation(len(X))
@@ -67,8 +85,6 @@ def main():
     train_idx = idx[:split]
     test_idx  = idx[split:]
 
-    df_train = df_scalars[train_idx]
-    df_test  = df_scalars[test_idx]
 
     kappai_train = kappai_true[train_idx]
     kappai_test  = kappai_true[test_idx]
@@ -83,32 +99,37 @@ def main():
     X_train_iq = X_train[:, :iq_dim].copy()
     X_train_m  = X_train[:, iq_dim:iq_dim + m_dim].copy()
 
-    # aplica máscara antes de calcular mean/std
-    X_train_iq[:, :max_F]        *= X_train_m
-    X_train_iq[:, max_F:2*max_F] *= X_train_m
+    # Split I/Q
+    I_tr = X_train_iq[:, :max_F]
+    Q_tr = X_train_iq[:, max_F:2*max_F]
 
+    # Normalización estable: z-score enmascarado (por muestra)
     X_train_iq = masked_mean_std_iq(X_train_iq, X_train_m, max_F)
 
-    # vuelve a enmascarar para que el pad no meta basura
-    X_train_iq[:, :max_F]        *= X_train_m
+    X_train_iq[:, :max_F] *= X_train_m
     X_train_iq[:, max_F:2*max_F] *= X_train_m
 
-    # X final: [IQ_norm, mask]
-    X_train = np.concatenate([X_train_iq, X_train_m], axis=1).astype(np.float32)
+    # Recupera F_norm de X_train (estaba ya concatenado en X)
+    X_train_f = X_train[:, iq_dim + m_dim : iq_dim + 2*m_dim].copy()
+
+    # X final: [IQ_norm, mask, F_norm]
+    X_train = np.concatenate([X_train_iq, X_train_m, X_train_f], axis=1).astype(np.float32)
 
     # ---- TEST ----
     X_test_iq = X_test[:, :iq_dim].copy()
     X_test_m  = X_test[:, iq_dim:iq_dim + m_dim].copy()
 
-    X_test_iq[:, :max_F]        *= X_test_m
-    X_test_iq[:, max_F:2*max_F] *= X_test_m
-
     X_test_iq = masked_mean_std_iq(X_test_iq, X_test_m, max_F)
 
-    X_test_iq[:, :max_F]        *= X_test_m
+    X_test_iq[:, :max_F] *= X_test_m
     X_test_iq[:, max_F:2*max_F] *= X_test_m
 
-    X_test = np.concatenate([X_test_iq, X_test_m], axis=1).astype(np.float32)
+
+    # Recupera F_norm de X_test (estaba ya concatenado en X)
+    X_test_f = X_test[:, iq_dim + m_dim : iq_dim + 2*m_dim].copy()
+
+    # X final: [IQ_norm, mask, F_norm]
+    X_test = np.concatenate([X_test_iq, X_test_m, X_test_f], axis=1).astype(np.float32)
 
     net = Net(
         input_dim=X_train.shape[1],
@@ -119,10 +140,10 @@ def main():
         loss=nn.HuberLoss(delta=0.5)
     )
 
-    losses = net.fit(X_train, df_train, y_train, batch_size=64)
+    losses = net.fit(X_train, y_train, batch_size=64)
 
-    y_pred_train = net.predict(X_train, df_train, batch_size=256)
-    y_pred_test  = net.predict(X_test,  df_test,  batch_size=256)
+    y_pred_train = net.predict(X_train, batch_size=256)
+    y_pred_test  = net.predict(X_test,  batch_size=256)
 
     kc_pred_train = np.exp(y_pred_train).flatten()
     kc_true_train = np.exp(y_train).flatten()
@@ -145,9 +166,9 @@ def main():
         "conv_channels": net.conv_channels,
         "kernel_size": net.kernel_size,
         "dropout": net.dropout,
-        "n_channels": 3,
+        "n_channels": 4,
         "max_F": int(max_F),
-        "uses_f_norm": False,
+        "uses_f_norm": True,
     }, model_path)
 
     print(f"Model saved to {model_path}")

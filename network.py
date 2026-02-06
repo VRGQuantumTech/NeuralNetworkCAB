@@ -81,12 +81,12 @@ class Net(nn.Module):
     ) -> None:
         super().__init__()
 
-        if input_dim % 3 != 0:
-            raise ValueError("input_dim debe ser múltiplo de 3 (I || Q || mask).")
+        if input_dim % 4 != 0:
+            raise ValueError("input_dim debe ser múltiplo de 4 (I || Q || mask || freq).")
 
         self.input_dim = int(input_dim)
         self.output_dim = int(output_dim)
-        self.F = input_dim // 3
+        self.F = input_dim // 4
 
         self.epochs = int(epochs)
         self.loss = nn.MSELoss() if loss is None else loss
@@ -107,7 +107,7 @@ class Net(nn.Module):
 
         # Stem con stride=2: baja F rápido y aprende patrones locales robustos
         self.stem = nn.Sequential(
-            nn.Conv1d(3, c1, kernel_size=k, stride=2, padding=(k // 2), bias=False),
+            nn.Conv1d(4, c1, kernel_size=k, stride=2, padding=(k // 2), bias=False),
             nn.BatchNorm1d(c1),
             nn.ReLU(inplace=True),
         )
@@ -124,12 +124,12 @@ class Net(nn.Module):
         self.act = nn.ReLU(inplace=True)
 
         # concat avg+max => 2*c4
-        self.fc1 = nn.Linear(2 * c4 + 1, self.n_units)
+        self.fc1 = nn.Linear(2 * c4, self.n_units)
         self.fc2 = nn.Linear(self.n_units, self.n_units)
         self.fc3 = nn.Linear(self.n_units, self.n_units)
         self.out = nn.Linear(self.n_units, self.output_dim)
 
-    def forward(self, x, df_scalar):
+    def forward(self, x):
         if x.ndim != 2:
             x = x.reshape(x.shape[0], -1)
 
@@ -139,8 +139,12 @@ class Net(nn.Module):
         I = x[:, :self.F]
         Q = x[:, self.F:2*self.F]
         M = x[:, 2*self.F:3*self.F]
-        
-        x_img = torch.stack([I*M, Q*M, M], dim=1)  # (N, 3, F)
+        Freq = x[:, 3*self.F:4*self.F]
+
+        # Asegura que freq padding queda a 0 (por si acaso)
+        Freq = Freq * M
+
+        x_img = torch.stack([I*M, Q*M, M, Freq], dim=1)  # (N, 4, F)
 
         h = self.stem(x_img)
         h = self.block1(h)
@@ -166,7 +170,7 @@ class Net(nn.Module):
         h_masked = h.masked_fill(m == 0, neg_inf)     # (N,c4,L)
         h_max = h_masked.max(dim=-1).values           # (N,c4)
 
-        h_combined = torch.cat([h_avg, h_max, df_scalar], dim=1)          # (N, 2*c4)
+        h_combined = torch.cat([h_avg, h_max], dim=1)          # (N, 2*c4)
 
         h = self.drop(self.act(self.fc1(h_combined)))
         h = self.drop(self.act(self.fc2(h)))
@@ -174,14 +178,14 @@ class Net(nn.Module):
 
         return self.out(h)
 
-    def fit(self, X, dfs, y, batch_size=64, shuffle=True): # Añadimos 'dfs'
+    def fit(self, X, y, batch_size=64, shuffle=True): # Añadimos 'dfs'
         self.to(DEVICE)
         Xt = torch.from_numpy(np.asarray(X, dtype=np.float32))
-        DFt = torch.from_numpy(np.asarray(dfs, dtype=np.float32)) # Nuevo
         yt = torch.from_numpy(np.asarray(y, dtype=np.float32))
 
-        ds = TensorDataset(Xt, DFt, yt) # Ahora son 3 elementos
+        ds = TensorDataset(Xt, yt)
         dl = DataLoader(ds, batch_size=int(batch_size), shuffle=bool(shuffle))
+
 
         optimiser = optim.AdamW(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
 
@@ -194,11 +198,10 @@ class Net(nn.Module):
         for ep in range(self.epochs):
             running = 0.0   
             n = 0
-            for xb, dfb, yb in dl: 
-                xb, dfb, yb = xb.to(DEVICE), dfb.to(DEVICE), yb.to(DEVICE)
-                dfb = dfb.view(-1, 1)
+            for xb, yb in dl: 
+                xb, yb = xb.to(DEVICE), yb.to(DEVICE)
                 optimiser.zero_grad()
-                out = self.forward(xb, dfb)
+                out = self.forward(xb)
                 loss = self.loss(out, yb)
 
                 loss.backward()
@@ -218,16 +221,14 @@ class Net(nn.Module):
 
         return losses
 
-    def predict(self, X, dfs, batch_size: int = 256): # Añadimos 'dfs'
+    def predict(self, X, batch_size: int = 256): # Añadimos 'dfs'
         self.to(DEVICE)
         self.eval()
         preds = []
         with torch.no_grad():
             for i in range(0, len(X), batch_size):
                 xb = torch.from_numpy(X[i:i+batch_size]).to(DEVICE).float()
-                dfb = torch.from_numpy(dfs[i:i+batch_size]).to(DEVICE).float()
-                dfb = dfb.view(-1, 1)
-                out = self.forward(xb, dfb)
+                out = self.forward(xb)
                 preds.append(out.cpu())
         return torch.cat(preds, dim=0).numpy()
 

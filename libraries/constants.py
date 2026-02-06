@@ -17,6 +17,7 @@ MAX_LENGTH  = 20000
 
 MIN_POLY_ORDER = 0
 MAX_POLY_ORDER = 3
+GLOBAL_F_SCALE = 10e6
 
 
 class ParameterLimits:

@@ -77,7 +77,25 @@ def masked_mean_std_iq(X_iq, M, max_F, eps=1e-8):
     I_n = (I - muI) / stdI
     Q_n = (Q - muQ) / stdQ
 
-    return np.concatenate([I_n, Q_n], axis=1).astype(np.float32)
+    return np.concatenate([I_n, Q_n], axis=1).astype(np.float32) 
+
+def build_f_norm(F, M, eps=1e-12):
+    """
+    F: (N, max_F) float64/float32 (padded)
+    M: (N, max_F) 0/1 mask
+    Devuelve F_norm en [-1,1] aprox, con padding a 0.
+    """
+    F = F.astype(np.float64, copy=False)
+    M = M.astype(np.float32, copy=False)
+
+    denom = np.sum(M, axis=1, keepdims=True) + eps
+    mu = np.sum(F * M, axis=1, keepdims=True) / denom
+
+    Fc = (F - mu) * M  # padding a 0
+
+    scale = np.max(np.abs(Fc), axis=1, keepdims=True) + eps
+    F_norm = (Fc / scale).astype(np.float32)
+    return F_norm
 
 def diagnostic_span_correlation(ok_paths, pct_errors_base):
     """
@@ -135,15 +153,15 @@ def diagnostic_span_correlation(ok_paths, pct_errors_base):
 
 
 
-def build_nn_input_from_dat_iq_df(dat_path: str, input_dim: int):
+def build_nn_input_from_dat(dat_path: str, input_dim: int):
     """
-    Input para la NN como [I || Q || M] (padding=0, mask=1 puntos reales)
-    y df_scalar aparte (en MHz como en training).
+    Input NN: [IQ_norm | MASK | F_norm]
+    EXACTAMENTE igual que en training
     """
-    if input_dim % 3 != 0:
-        raise ValueError("input_dim debe ser múltiplo de 3 (I||Q||mask).")
+    if input_dim % 4 != 0:
+        raise ValueError("input_dim debe ser 4*max_F")
 
-    max_F = input_dim // 3
+    max_F = input_dim // 4
 
     f, I, Q = load_iq_from_dat(dat_path)
     Fi = len(f)
@@ -154,43 +172,40 @@ def build_nn_input_from_dat_iq_df(dat_path: str, input_dim: int):
         Q = Q[:max_F]
         Fi = max_F
 
-    # --- df (Hz) -> escalar en MHz (igual que training.py) ---
-    if Fi >= 2:
-        df_hz = float(np.median(np.diff(f)))  # robusto si hay algún salto raro
-    else:
-        df_hz = 0.0
-    df_scalar = np.array([[df_hz / 1e6]], dtype=np.float32)  # (1,1)
-
-    # --- padding + mask ---
+    # Padding
     I_pad = np.zeros(max_F, dtype=np.float32)
     Q_pad = np.zeros(max_F, dtype=np.float32)
+    F_pad = np.zeros(max_F, dtype=np.float64)
     M     = np.zeros(max_F, dtype=np.float32)
 
-    I_pad[:Fi] = I.astype(np.float32)
-    Q_pad[:Fi] = Q.astype(np.float32)
-    M[:Fi] = 1.0
+    I_pad[:Fi] = I
+    Q_pad[:Fi] = Q
+    F_pad[:Fi] = f
+    M[:Fi]     = 1.0
 
-    # --- masked normalize (idéntico a training) ---
-    I_pad *= M
-    Q_pad *= M
+    # ---- Normalización IQ (MISMA que training) ----
+    X_iq = np.concatenate([I_pad, Q_pad])[None, :]
+    M_   = M[None, :]
 
-    X_iq = np.concatenate([I_pad, Q_pad], axis=0)[None, :]   # (1, 2*max_F)
-    X_m  = M[None, :]                                        # (1, max_F)
+    X_iq = masked_mean_std_iq(X_iq, M_, max_F)
+    X_iq[:, :max_F] *= M_
+    X_iq[:, max_F:] *= M_
 
-    X_iq = masked_mean_std_iq(X_iq, X_m, max_F)              # (1, 2*max_F)
+    # ---- F como canal ----
+    F_norm = build_f_norm(F_pad[None, :], M_)
 
-    # re-apaga padding
-    X_iq[:, :max_F]        *= X_m
-    X_iq[:, max_F:2*max_F] *= X_m
+    # ---- X final ----
+    X = np.concatenate([
+        X_iq,
+        M_,
+        F_norm
+    ], axis=1).astype(np.float32)
 
-    # --- final: [IQ_norm | M] ---
-    X = np.concatenate([X_iq[0], M], axis=0).astype(np.float32)[None, :]  # (1, 3*max_F)
+    return X
 
-    return X, df_scalar
-
-def predict_kc_nn(net: Net, X: np.ndarray, df_scalar: np.ndarray) -> float:
+def predict_kc_nn(net: Net, X: np.ndarray) -> float:
     with torch.no_grad():
-        y_pred = net.predict(X, df_scalar)
+        y_pred = net.predict(X)
     return float(np.exp(np.asarray(y_pred).reshape(-1)[0]))
 
 
@@ -251,14 +266,7 @@ def main():
     kc_oneshot_list = []
     spans = []
 
-    for dat_path in dat_files[:100]:
-    
-        try:
-            span = get_real_span_from_dat(dat_path)
-            spans.append(span)
-            print(f"{dat_path.name}: {span/1e6:.3f} MHz")
-        except Exception as e:
-            print(e)
+    for dat_path in dat_files[100:140]:
 
         try:
             # --- One-shot ---
@@ -268,27 +276,35 @@ def main():
             plt.close("all")
             fit = results["one-shot"].final
             kc_oneshot = float(fit["kappac"])
-            if np.isfinite(kc_oneshot) and kc_oneshot > 0:
-                kc_oneshot_list.append(kc_oneshot)
+
+            # --- FILTRO: solo considerar one-shot en rango ---
+            if (not np.isfinite(kc_oneshot)) or (kc_oneshot < 1e4) or (kc_oneshot > 1e5):
+                continue
+
+            kc_oneshot_list.append(kc_oneshot)
 
             # --- NN ---
-            X_real, df_scalar = build_nn_input_from_dat_iq_df(str(dat_path), input_dim=input_dim)
-            kc_base = predict_kc_nn(net_base, X_real, df_scalar)
-            #kc_ft   = predict_kc_nn(net_ft,   X_real)
+            X_real = build_nn_input_from_dat(str(dat_path), input_dim)
+            kc_base = predict_kc_nn(net_base, X_real)
 
-            if kc_oneshot > 0:
-                err_base = abs(np.log(kc_base) - np.log(kc_oneshot))
-                #  err_ft   = abs(np.log(kc_ft)   - np.log(kc_oneshot))
-                pct_base = abs(kc_base - kc_oneshot) / kc_oneshot * 100.0
-                #pct_ft   = abs(kc_ft   - kc_oneshot) / kc_oneshot * 100.0
-                rel_errors_base.append(err_base)
-                #rel_errors_ft.append(err_ft)
-                ok_paths.append(dat_path)
-                pct_errors_base.append(pct_base)
-                #pct_errors_ft.append(pct_ft)
+            # --- Errores ---
+            err_base = abs(np.log(kc_base) - np.log(kc_oneshot))
+            pct_base = abs(kc_base - kc_oneshot) / kc_oneshot * 100.0
+
+            rel_errors_base.append(err_base)
+            ok_paths.append(dat_path)
+            pct_errors_base.append(pct_base)
+            #pct_errors_ft.append(pct_ft)
 
         except Exception:
             print(Exception)
+
+        try:
+            span = get_real_span_from_dat(dat_path)
+            spans.append(span)
+            print(f"{dat_path.name}: {span/1e6:.3f} MHz")
+        except Exception as e:
+            print(e)
 
     if len(rel_errors_base) == 0:
         print("No se pudo calcular el error (todos los ficheros fallaron).")
@@ -321,7 +337,7 @@ def main():
     print(f"% fuera de [1e4, 1e5]: {outside:.1f}%")
 
     #print("\n--- Mejora entre modelo base y fine-tuned ---")
-    improv = (rel_errors_base.mean() - rel_errors_ft.mean()) / (rel_errors_base.mean() + 1e-12)
+    #improv = (rel_errors_base.mean() - rel_errors_ft.mean()) / (rel_errors_base.mean() + 1e-12)
     #print(f"Mejora relativa (menor es mejor): {improv:.2%}")
     
 
@@ -341,8 +357,8 @@ def main():
         fit = results["one-shot"].final
         
         kc_oneshot = float(fit["kappac"])
-        X_input, df_scalar = build_nn_input_from_dat_iq_df(str(dat_path), input_dim=input_dim)
-        kc_nn = predict_kc_nn(net_base, X_input, df_scalar)
+        X_input = build_nn_input_from_dat(str(dat_path), input_dim)
+        kc_nn = predict_kc_nn(net_base, X_input)
 
         # Reconstrucción de la curva NN para validación visual
         # Usamos los parámetros del one-shot (fr, phi, etc.) pero sustituimos Kc
